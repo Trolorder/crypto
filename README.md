@@ -1,1 +1,1 @@
-# crypto
+https://trolorder.github.io/crypto/
