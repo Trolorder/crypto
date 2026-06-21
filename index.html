@@ -512,10 +512,11 @@ select.native{ appearance:none; background-image:url("data:image/svg+xml,%3Csvg 
 
     <div class="lock-tabs">
       <button class="lock-tab active" data-locktab="unlock">Déverrouiller</button>
+      <button class="lock-tab" data-locktab="newdevice">Nouvel appareil</button>
       <button class="lock-tab" data-locktab="setup">Première config</button>
     </div>
 
-    <!-- UNLOCK PANE -->
+    <!-- UNLOCK PANE (appareil déjà connecté — token chiffré déjà présent localement) -->
     <div class="lock-pane active" id="pane-unlock">
       <div class="lock-field">
         <label for="unlock-pass">Mot de passe maître</label>
@@ -526,7 +527,30 @@ select.native{ appearance:none; background-image:url("data:image/svg+xml,%3Csvg 
       <a class="lock-readonly-link" id="link-readonly">Consulter en lecture seule sans mot de passe →</a>
     </div>
 
-    <!-- SETUP PANE -->
+    <!-- NEW DEVICE PANE (récupère le vault chiffré déjà stocké sur GitHub — un seul mot de passe suffit) -->
+    <div class="lock-pane" id="pane-newdevice">
+      <div class="alert-box info" style="margin-bottom:16px; font-size:11.5px;">
+        Ton mot de passe maître déverrouille l'accès depuis n'importe quel appareil — pas besoin de ressaisir le token GitHub. Indique juste où se trouve ton dépôt.
+      </div>
+      <div class="field-row">
+        <div class="lock-field">
+          <label for="nd-owner">Propriétaire</label>
+          <input type="text" id="nd-owner" placeholder="Trolorder">
+        </div>
+        <div class="lock-field">
+          <label for="nd-repo">Dépôt</label>
+          <input type="text" id="nd-repo" placeholder="Crypto-Tracker">
+        </div>
+      </div>
+      <div class="lock-field">
+        <label for="nd-pass">Mot de passe maître</label>
+        <input type="password" id="nd-pass" placeholder="••••••••" autocomplete="current-password">
+      </div>
+      <button class="btn lock-btn" id="btn-newdevice">Récupérer l'accès</button>
+      <div class="lock-msg" id="newdevice-msg"></div>
+    </div>
+
+    <!-- SETUP PANE (première fois absolue — crée le vault chiffré sur GitHub) -->
     <div class="lock-pane" id="pane-setup">
       <div class="lock-field">
         <label for="setup-token">Token GitHub (scope repo)</label>
@@ -555,7 +579,7 @@ select.native{ appearance:none; background-image:url("data:image/svg+xml,%3Csvg 
     </div>
 
     <div class="lock-foot">
-      Le token GitHub est chiffré (AES-256) avec ton mot de passe maître et stocké uniquement dans ce navigateur. Aucune donnée sensible ne quitte ton appareil hors du dépôt GitHub que tu contrôles.
+      Le token GitHub est chiffré (AES-256) avec ton mot de passe maître. Il est sauvegardé à la fois sur cet appareil et dans ton dépôt GitHub (fichier <code>data/vault.json</code>, jamais en clair) — c'est ce qui permet à un seul mot de passe de fonctionner sur tous tes appareils. Le dépôt doit être public pour que « Nouvel appareil » et la lecture seule fonctionnent.
     </div>
   </div>
 </div>
@@ -1086,7 +1110,8 @@ window.APP_VERSION = "1.0.0";
    ------------------------------------------------------------ */
 const STORAGE_KEY_VAULT   = "ledger_vault_v1";       // {encToken, owner, repo, salt, iv, kdfIter} -- localStorage
 const STORAGE_KEY_SESSION = "ledger_session_v1";     // token déchiffré en mémoire de session (sessionStorage)
-const DATA_FILE_PATH      = "data/portfolio.json";   // chemin du fichier dans le repo GitHub
+const DATA_FILE_PATH      = "data/portfolio.json";   // chemin du fichier de données dans le repo GitHub
+const VAULT_FILE_PATH     = "data/vault.json";        // chemin du vault chiffré (token) dans le repo GitHub — permet le multi-appareils avec un seul mot de passe
 const COINGECKO_BASE      = "https://api.coingecko.com/api/v3";
 
 let STATE = {
@@ -1341,7 +1366,16 @@ function updateSyncStatusUI(ok, errMsg){
 
 
 /* ------------------------------------------------------------
-   4. AUTHENTIFICATION — setup / unlock / lock / lecture seule
+   4. AUTHENTIFICATION — setup / unlock / nouvel appareil / lock / lecture seule
+   ------------------------------------------------------------
+   Le token GitHub chiffré (AES-256, dérivé du mot de passe maître)
+   est sauvegardé à DEUX endroits :
+     1. localStorage de cet appareil (déverrouillage rapide, hors-ligne)
+     2. data/vault.json sur le dépôt GitHub lui-même (jamais en clair)
+   Le point 2 permet à un nouvel appareil de récupérer l'accès avec
+   uniquement le mot de passe maître + l'emplacement du dépôt — sans
+   jamais ressaisir le token. Le dépôt doit être public pour que
+   cette lecture initiale (non authentifiée) fonctionne.
    ------------------------------------------------------------ */
 function showLockMsg(elId, text, ok){
   const el = document.getElementById(elId);
@@ -1358,15 +1392,40 @@ document.querySelectorAll(".lock-tab").forEach(tab=>{
   });
 });
 
-// Si un vault existe déjà, on cache l'onglet "Première config" et on ouvre direct sur déverrouillage
+// Si un vault existe déjà localement, on ouvre direct sur déverrouillage ; sinon sur première config
 function initLockScreenMode(){
   const vault = loadVault();
-  const setupTab = document.querySelector('[data-locktab="setup"]');
   if (vault){
     document.querySelector('[data-locktab="unlock"]').click();
   } else {
-    setupTab.click();
+    document.querySelector('[data-locktab="setup"]').click();
   }
+}
+
+// Lit le vault chiffré distant sur GitHub via l'API publique (pas besoin de token pour lire un repo public)
+async function fetchRemoteVault(owner, repo){
+  const res = await fetch(`${GH_API}/repos/${owner}/${repo}/contents/${VAULT_FILE_PATH}`);
+  if (res.status === 404) return { exists:false, content:null, sha:null };
+  if (!res.ok) throw new Error("Impossible d'accéder au dépôt (HTTP " + res.status + "). Vérifie qu'il est public, ou le nom du propriétaire/dépôt.");
+  const json = await res.json();
+  const decoded = decodeURIComponent(escape(atob(json.content.replace(/\n/g,""))));
+  return { exists:true, content: JSON.parse(decoded), sha: json.sha };
+}
+
+// Sauvegarde le vault chiffré sur GitHub (nécessite un token avec droits d'écriture)
+async function saveRemoteVault(encToken, salt, iv, owner, repo, existingSha){
+  const body = {
+    message: "Mise à jour du vault chiffré — Ledger",
+    content: btoa(unescape(encodeURIComponent(JSON.stringify({ encToken, salt, iv, v:1 }, null, 2))))
+  };
+  if (existingSha) body.sha = existingSha;
+  const headers = { "Authorization":"Bearer " + STATE.github.token, "Accept":"application/vnd.github+json", "Content-Type":"application/json" };
+  const res = await fetch(`${GH_API}/repos/${owner}/${repo}/contents/${VAULT_FILE_PATH}`, { method:"PUT", headers, body: JSON.stringify(body) });
+  if (!res.ok){
+    const err = await res.json().catch(()=>({}));
+    throw new Error("Échec de sauvegarde du vault distant (" + res.status + ") — " + (err.message||""));
+  }
+  return res.json();
 }
 
 document.getElementById("btn-setup").addEventListener("click", async ()=>{
@@ -1389,7 +1448,6 @@ document.getElementById("btn-setup").addEventListener("click", async ()=>{
   }
 
   const { cipher, salt, iv } = deriveAndEncryptToken(token, pass);
-  saveVault(cipher, owner, repo, salt, iv);
 
   STATE.github.token = token;
   STATE.github.owner = owner;
@@ -1397,11 +1455,22 @@ document.getElementById("btn-setup").addEventListener("click", async ()=>{
   STATE.unlocked = true;
   STATE.readOnly = false;
 
-  showLockMsg("setup-msg", "Connexion établie. Initialisation des données…", true);
+  showLockMsg("setup-msg", "Connexion établie. Sauvegarde du vault et initialisation des données…", true);
+
+  // Sauvegarde locale (déverrouillage rapide sur CET appareil)
+  saveVault(cipher, owner, repo, salt, iv);
+
+  // Sauvegarde distante (permet le multi-appareils avec un seul mot de passe)
+  try{
+    await saveRemoteVault(cipher, salt, iv, owner, repo, null);
+  }catch(e){
+    showLockMsg("setup-msg", "Token valide, mais la sauvegarde du vault distant a échoué : " + e.message + ". Tu peux continuer, mais le multi-appareils sans ressaisir le token ne fonctionnera pas tant que ce n'est pas résolu.", false);
+  }
+
   await syncPull();
   if (!STATE.data.transactions) STATE.data.transactions = [];
   if (!STATE.data.journal) STATE.data.journal = [];
-  addJournal("auth", "Première configuration effectuée — dépôt " + owner + "/" + repo + " connecté.");
+  addJournal("auth", "Première configuration effectuée — dépôt " + owner + "/" + repo + " connecté, vault chiffré sauvegardé.");
   await syncPush(true);
 
   sessionStorage.setItem(STORAGE_KEY_SESSION, token);
@@ -1411,7 +1480,7 @@ document.getElementById("btn-setup").addEventListener("click", async ()=>{
 document.getElementById("btn-unlock").addEventListener("click", async ()=>{
   const pass = document.getElementById("unlock-pass").value;
   const vault = loadVault();
-  if (!vault){ showLockMsg("unlock-msg", "Aucune configuration trouvée. Utilise l'onglet « Première config ».", false); return; }
+  if (!vault){ showLockMsg("unlock-msg", "Aucune configuration trouvée sur cet appareil. Utilise l'onglet « Nouvel appareil » ou « Première config ».", false); return; }
   const token = decryptToken(vault.encToken, pass, vault.salt, vault.iv);
   if (!token){ showLockMsg("unlock-msg", "Mot de passe incorrect.", false); return; }
 
@@ -1422,31 +1491,76 @@ document.getElementById("btn-unlock").addEventListener("click", async ()=>{
   STATE.readOnly = false;
 
   showLockMsg("unlock-msg", "Déverrouillage… synchronisation en cours.", true);
-  const ok = await syncPull();
-  if (!ok && !STATE.github.sha){
-    // pull a échoué ET pas de fichier connu -> on continue avec données vides mais on prévient
-  }
+  await syncPull();
   addJournal("auth", "Connexion déverrouillée sur cet appareil.");
+  sessionStorage.setItem(STORAGE_KEY_SESSION, token);
+  enterApp();
+});
+
+// NOUVEL APPAREIL : récupère le vault chiffré stocké sur GitHub avec juste owner/repo + mot de passe maître
+document.getElementById("btn-newdevice").addEventListener("click", async ()=>{
+  const owner = document.getElementById("nd-owner").value.trim() || "Trolorder";
+  const repo  = document.getElementById("nd-repo").value.trim() || "Crypto-Tracker";
+  const pass  = document.getElementById("nd-pass").value;
+
+  if (!pass){ showLockMsg("newdevice-msg", "Le mot de passe maître est requis.", false); return; }
+
+  showLockMsg("newdevice-msg", "Recherche du vault sur le dépôt…", true);
+  let remote;
+  try{
+    remote = await fetchRemoteVault(owner, repo);
+  }catch(e){
+    showLockMsg("newdevice-msg", e.message, false);
+    return;
+  }
+  if (!remote.exists){
+    showLockMsg("newdevice-msg", "Aucun vault trouvé sur ce dépôt. As-tu bien fait la « Première config » sur un autre appareil ? Le dépôt doit aussi être public.", false);
+    return;
+  }
+
+  const token = decryptToken(remote.content.encToken, pass, remote.content.salt, remote.content.iv);
+  if (!token){ showLockMsg("newdevice-msg", "Mot de passe incorrect.", false); return; }
+
+  showLockMsg("newdevice-msg", "Mot de passe valide. Connexion en cours…", true);
+  try{
+    await ghTestToken(token, owner, repo);
+  }catch(e){
+    showLockMsg("newdevice-msg", "Le token récupéré n'est plus valide : " + e.message, false);
+    return;
+  }
+
+  STATE.github.token = token;
+  STATE.github.owner = owner;
+  STATE.github.repo  = repo;
+  STATE.unlocked = true;
+  STATE.readOnly = false;
+
+  // Sauvegarde locale pour accélérer les prochains déverrouillages sur CET appareil
+  saveVault(remote.content.encToken, owner, repo, remote.content.salt, remote.content.iv);
+
+  await syncPull();
+  addJournal("auth", "Nouvel appareil connecté via le vault distant.");
   sessionStorage.setItem(STORAGE_KEY_SESSION, token);
   enterApp();
 });
 
 document.getElementById("link-readonly").addEventListener("click", async (e)=>{
   e.preventDefault();
+  // En lecture seule, on accepte soit un vault local existant, soit les champs "Nouvel appareil" s'ils sont remplis
   const vault = loadVault();
-  if (!vault){
-    showToast("Aucun dépôt configuré sur cet appareil pour la lecture seule.", "err");
-    return;
-  }
+  const ndOwner = document.getElementById("nd-owner").value.trim();
+  const ndRepo  = document.getElementById("nd-repo").value.trim();
+  const owner = vault ? vault.owner : (ndOwner || "Trolorder");
+  const repo  = vault ? vault.repo  : (ndRepo  || "Crypto-Tracker");
+
   STATE.readOnly = true;
   STATE.unlocked = true;
   STATE.github.token = null; // pas de token en lecture seule -> appels publics uniquement
-  STATE.github.owner = vault.owner;
-  STATE.github.repo  = vault.repo;
+  STATE.github.owner = owner;
+  STATE.github.repo  = repo;
 
-  // Lecture seule : on tente de lire le fichier via l'API publique non authentifiée (repo doit être public)
   try{
-    const res = await fetch(`${GH_API}/repos/${vault.owner}/${vault.repo}/contents/${DATA_FILE_PATH}`);
+    const res = await fetch(`${GH_API}/repos/${owner}/${repo}/contents/${DATA_FILE_PATH}`);
     if (res.ok){
       const json = await res.json();
       const decoded = decodeURIComponent(escape(atob(json.content.replace(/\n/g,""))));
@@ -1491,7 +1605,7 @@ document.getElementById("btn-lock").addEventListener("click", lockApp);
 document.getElementById("btn-disconnect").addEventListener("click", ()=>{
   askConfirm(
     "Déconnecter cet appareil",
-    "Le token chiffré sera supprimé de ce navigateur. Tes données restent intactes sur GitHub — tu pourras te reconnecter avec ton token.",
+    "Le token chiffré sera supprimé de ce navigateur. Tes données et le vault chiffré restent intacts sur GitHub — tu pourras te reconnecter via « Nouvel appareil » avec ton mot de passe maître.",
     ()=>{
       localStorage.removeItem(STORAGE_KEY_VAULT);
       sessionStorage.removeItem(STORAGE_KEY_SESSION);
@@ -1651,6 +1765,11 @@ async function refreshPricesOnly(){
   renderDashboard();
   renderAssets();
 }
+document.getElementById("btn-refresh").addEventListener("click", async ()=>{
+  showToast("Actualisation des cours…");
+  await refreshPricesOnly();
+});
+
 /* ------------------------------------------------------------
    6. MOTEUR CUMP — Coût Unitaire Moyen Pondéré (Art. 150 VH bis CGI)
    ------------------------------------------------------------
@@ -2177,7 +2296,7 @@ document.getElementById("form-tx").addEventListener("submit", async (e)=>{
   const id = document.getElementById("tx-id").value;
   const type = document.getElementById("tx-type").value;
   const asset = document.getElementById("tx-asset").value.trim().toLowerCase();
-  const date = new Date(document.getElementById("tx-date").value).toISOString();
+  const dateRaw = document.getElementById("tx-date").value;
   const qty = parseFloat(document.getElementById("tx-qty").value);
   const price = parseFloat(document.getElementById("tx-price").value);
   const fee = parseFloat(document.getElementById("tx-fee").value) || 0;
@@ -2188,6 +2307,16 @@ document.getElementById("form-tx").addEventListener("submit", async (e)=>{
     showToast("Merci de remplir correctement les champs requis.", "err");
     return;
   }
+  if (!dateRaw){
+    showToast("La date est requise.", "err");
+    return;
+  }
+  const parsedDate = new Date(dateRaw);
+  if (isNaN(parsedDate.getTime())){
+    showToast("La date saisie n'est pas valide.", "err");
+    return;
+  }
+  const date = parsedDate.toISOString();
 
   if (id){
     const tx = STATE.data.transactions.find(t=>t.id===id);
@@ -2201,9 +2330,16 @@ document.getElementById("form-tx").addEventListener("submit", async (e)=>{
   }
 
   closeModal("modal-tx");
-  await fetchPrices();
   refreshAll();
-  syncPush();
+  try{
+    await fetchPrices();
+    refreshAll();
+  }catch(e){ /* non bloquant pour la sauvegarde */ }
+  try{
+    await syncPush(true);
+  }catch(e){
+    showToast("Transaction enregistrée localement, mais la synchro GitHub a échoué : " + e.message, "err");
+  }
 });
 
 function deleteTx(id){
@@ -2214,7 +2350,7 @@ function deleteTx(id){
     if (tx) addJournal("tx_delete", `Transaction supprimée — ${TX_TYPE_LABELS[tx.type]} ${fmtQty(tx.qty)} ${tx.asset.toUpperCase()}`);
     refreshAll();
     showToast("Transaction supprimée.");
-    syncPush();
+    syncPush(true);
   });
 }
 
@@ -2254,22 +2390,75 @@ function detectExchangeFormat(headerRow){
   return "generic";
 }
 
-function mapKrakenRow(headers, row){
-  const get = name => { const idx = headers.findIndex(h=>h.toLowerCase().trim()===name); return idx>=0 ? row[idx] : ""; };
-  const type = (get("type")||"").toLowerCase();
-  const asset = (get("asset")||"").replace(/^X|^Z/,"").trim(); // Kraken préfixe parfois X/Z
-  const amount = parseFloat(get("amount")) || 0;
-  const fee = parseFloat(get("fee")) || 0;
-  const time = get("time");
-  if (!asset || amount === 0) return null;
-  let txType = amount > 0 ? "transfer_in" : "transfer_out";
-  if (type === "trade") txType = amount > 0 ? "buy" : "sell";
-  if (type === "staking") txType = "stake_reward";
-  return { type: txType, asset: asset.toLowerCase(), qty: Math.abs(amount), price: 0, fee, date: time ? new Date(time).toISOString() : new Date().toISOString(), source:"Kraken (CSV)" };
+// Devises fiat reconnues — une ligne de ledger sur cette devise est la "jambe" cash d'un trade,
+// pas un actif numérique à enregistrer en tant que tel.
+const FIAT_CODES = new Set(["eur","usd","gbp","chf","jpy","cad","aud"]);
+function stripKrakenAssetPrefix(raw){
+  // Kraken préfixe certains actifs d'un X (crypto) ou Z (fiat) historique : XXBT, XETH, ZEUR, ZUSD...
+  // mais pas tous (USDT, SOL... restent tels quels). On ne retire le préfixe que pour les codes connus.
+  const known = { XXBT:"BTC", XETH:"ETH", XXRP:"XRP", XLTC:"LTC", XXLM:"XLM", XXMR:"XMR", XZEC:"ZEC", XREP:"REP",
+                  ZEUR:"EUR", ZUSD:"USD", ZGBP:"GBP", ZCAD:"CAD", ZJPY:"JPY", ZCHF:"CHF" };
+  const upper = raw.toUpperCase().trim();
+  if (known[upper]) return known[upper];
+  return upper;
 }
+
+function mapKrakenRows(headers, dataRows){
+  // Le ledger Kraken liste CHAQUE jambe d'un trade sur une ligne séparée, reliées par "refid".
+  // Pour reconstituer un prix unitaire correct, on regroupe les lignes par refid.
+  const get = (row, name) => { const idx = headers.findIndex(h=>h.toLowerCase().trim()===name); return idx>=0 ? row[idx] : ""; };
+  const groups = {};
+  dataRows.forEach(row=>{
+    const refid = get(row, "refid");
+    const type = (get(row, "type")||"").toLowerCase();
+    const assetRaw = stripKrakenAssetPrefix(get(row, "asset")||"");
+    const amount = parseFloat(get(row, "amount")) || 0;
+    const fee = parseFloat(get(row, "fee")) || 0;
+    const time = get(row, "time");
+    if (!assetRaw || amount === 0) return;
+    if (!groups[refid]) groups[refid] = [];
+    groups[refid].push({ type, asset: assetRaw, amount, fee, time });
+  });
+
+  const results = [];
+  const skipped = [];
+  Object.entries(groups).forEach(([refid, legs])=>{
+    if (legs.length === 1){
+      const leg = legs[0];
+      if (FIAT_CODES.has(leg.asset.toLowerCase())) return; // dépôt/retrait fiat pur, hors scope crypto
+      if (leg.type === "staking" || leg.type === "reward"){
+        results.push({ type:"stake_reward", asset: leg.asset.toLowerCase(), qty: Math.abs(leg.amount), price:0, fee:leg.fee,
+          date: leg.time ? new Date(leg.time).toISOString() : new Date().toISOString(), source:"Kraken (CSV)",
+          notes:"Valeur à réception non fournie par le ledger Kraken — à compléter manuellement." });
+      } else {
+        results.push({ type: leg.amount>0?"transfer_in":"transfer_out", asset: leg.asset.toLowerCase(), qty: Math.abs(leg.amount), price:0, fee:leg.fee,
+          date: leg.time ? new Date(leg.time).toISOString() : new Date().toISOString(), source:"Kraken (CSV)" });
+      }
+      return;
+    }
+    // Cas standard : 2 jambes (crypto + fiat) pour un même trade
+    const cryptoLeg = legs.find(l => !FIAT_CODES.has(l.asset.toLowerCase()));
+    const fiatLeg = legs.find(l => FIAT_CODES.has(l.asset.toLowerCase()));
+    if (!cryptoLeg || !fiatLeg){
+      skipped.push(refid);
+      return;
+    }
+    const qty = Math.abs(cryptoLeg.amount);
+    const totalFiat = Math.abs(fiatLeg.amount);
+    const price = qty > 0 ? totalFiat / qty : 0;
+    const totalFee = (cryptoLeg.fee||0) + (fiatLeg.fee||0);
+    results.push({
+      type: cryptoLeg.amount > 0 ? "buy" : "sell",
+      asset: cryptoLeg.asset.toLowerCase(), qty, price, fee: totalFee,
+      date: cryptoLeg.time ? new Date(cryptoLeg.time).toISOString() : new Date().toISOString(),
+      source:"Kraken (CSV)"
+    });
+  });
+  return { results, skipped };
+}
+
 function mapBinanceRow(headers, row){
   const get = name => { const idx = headers.findIndex(h=>h.toLowerCase().trim()===name); return idx>=0 ? row[idx] : ""; };
-  const pair = get("pair") || "";
   const side = (get("side")||"").toLowerCase();
   const executed = get("executed") || ""; // ex: "0.5 BTC"
   const amount = get("amount") || "";     // ex: "15000 USDT"
@@ -2301,30 +2490,72 @@ function mapCoinbaseRow(headers, row){
   return { type, asset, qty, price: spotPrice, fee: fees, date: date ? new Date(date).toISOString() : new Date().toISOString(), source:"Coinbase (CSV)" };
 }
 function mapGenericRow(headers, row){
-  const get = name => { const idx = headers.findIndex(h=>h.toLowerCase().trim()===name); return idx>=0 ? row[idx] : ""; };
-  const date = get("date");
-  const asset = (get("actif")||get("asset")||"").toLowerCase();
-  const type = (get("type")||"buy").toLowerCase();
-  const qty = parseFloat(get("quantité")||get("quantity")) || 0;
-  const price = parseFloat(get("prix")||get("price")) || 0;
-  const fee = parseFloat(get("frais")||get("fee")) || 0;
+  // Recherche tolérante : ignore accents, casse, espaces superflus dans les en-têtes
+  const normalize = s => s.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  const get = (...names) => {
+    for (const name of names){
+      const idx = headers.findIndex(h => normalize(h) === normalize(name));
+      if (idx >= 0 && row[idx] !== undefined && row[idx] !== "") return row[idx];
+    }
+    return "";
+  };
+  const date = get("date","timestamp","horodatage");
+  const asset = (get("actif","asset","crypto","symbole","symbol")||"").toLowerCase().trim();
+  const type = (get("type","operation","opération")||"buy").toLowerCase().trim();
+  const qty = parseFloat((get("quantite","quantité","quantity","qty","montant")||"").toString().replace(",", ".")) || 0;
+  const price = parseFloat((get("prix","price","cours","prix unitaire")||"").toString().replace(",", ".")) || 0;
+  const fee = parseFloat((get("frais","fee","fees")||"0").toString().replace(",", ".")) || 0;
   if (!asset || qty===0) return null;
-  const typeMap = { achat:"buy", buy:"buy", vente:"sell", sell:"sell", staking:"stake_reward", minage:"mining", mining:"mining" };
+  const typeMap = { achat:"buy", buy:"buy", vente:"sell", sell:"sell", staking:"stake_reward",
+    recompense:"stake_reward", "récompense":"stake_reward", minage:"mining", mining:"mining",
+    reception:"transfer_in", "réception":"transfer_in", depot:"transfer_in", "dépôt":"transfer_in",
+    envoi:"transfer_out", retrait:"transfer_out" };
   return { type: typeMap[type]||"buy", asset, qty, price, fee, date: date?new Date(date).toISOString():new Date().toISOString(), source:"Import CSV générique" };
 }
 
 function processCsvFile(file){
+  if (!file.name.toLowerCase().endsWith(".csv")){
+    showToast("Le fichier doit être au format .csv", "err");
+    return;
+  }
   const reader = new FileReader();
+  reader.onerror = ()=> showToast("Impossible de lire le fichier — il est peut-être corrompu.", "err");
   reader.onload = (e)=>{
-    const rows = parseCSV(e.target.result);
-    if (rows.length < 2){ showToast("Fichier CSV vide ou illisible.", "err"); return; }
+    let rows;
+    try{
+      rows = parseCSV(e.target.result);
+    }catch(err){
+      showToast("Erreur de lecture du CSV : " + err.message, "err");
+      return;
+    }
+    if (rows.length < 2){
+      showToast("Le fichier CSV est vide ou ne contient pas de données (juste l'en-tête, ou rien).", "err");
+      document.getElementById("csv-preview").style.display = "none";
+      document.getElementById("btn-csv-confirm").disabled = true;
+      return;
+    }
     const headers = rows[0];
     const dataRows = rows.slice(1);
     let format = document.getElementById("csv-exchange").value;
     if (format === "auto") format = detectExchangeFormat(headers);
 
-    const mapper = { kraken: mapKrakenRow, binance: mapBinanceRow, coinbase: mapCoinbaseRow, generic: mapGenericRow }[format] || mapGenericRow;
-    pendingCsvTxs = dataRows.map(r => mapper(headers, r)).filter(Boolean);
+    let skipped = [];
+    if (format === "kraken"){
+      const r = mapKrakenRows(headers, dataRows);
+      pendingCsvTxs = r.results;
+      skipped = r.skipped;
+    } else {
+      const mapper = { binance: mapBinanceRow, coinbase: mapCoinbaseRow, generic: mapGenericRow }[format] || mapGenericRow;
+      pendingCsvTxs = dataRows.map(r => mapper(headers, r)).filter(Boolean);
+    }
+
+    if (pendingCsvTxs.length === 0){
+      showToast(`Aucune transaction reconnue dans ce fichier avec le format « ${format} ». Vérifie le format sélectionné ou essaie « Générique ».`, "err");
+    } else if (skipped.length){
+      showToast(`${pendingCsvTxs.length} transaction(s) reconnue(s), ${skipped.length} ligne(s) ignorée(s) (paire de trade incomplète).`, "warn");
+    } else {
+      showToast(`${pendingCsvTxs.length} transaction(s) détectée(s) — vérifie l'aperçu avant de confirmer.`);
+    }
 
     renderCsvPreview(format, pendingCsvTxs);
   };
@@ -2333,16 +2564,30 @@ function processCsvFile(file){
 
 function renderCsvPreview(format, txs){
   document.getElementById("csv-preview").style.display = "block";
-  document.getElementById("csv-preview-title").textContent = `Aperçu — format détecté : ${format} — ${txs.length} transaction(s)`;
+  document.getElementById("csv-preview-title").textContent = txs.length
+    ? `Aperçu — format détecté : ${format} — ${txs.length} transaction(s)`
+    : `Aucune transaction trouvée — format testé : ${format}`;
   const thead = document.querySelector("#csv-preview-table thead");
   const tbody = document.querySelector("#csv-preview-table tbody");
   thead.innerHTML = "<tr><th>Date</th><th>Type</th><th>Actif</th><th>Quantité</th><th>Prix</th><th>Frais</th></tr>";
   tbody.innerHTML = "";
-  txs.slice(0,50).forEach(tx=>{
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${fmtDateTime(tx.date)}</td><td>${TX_TYPE_LABELS[tx.type]||tx.type}</td><td>${tx.asset.toUpperCase()}</td><td>${fmtQty(tx.qty)}</td><td>${fmtMoney(tx.price)}</td><td>${fmtMoney(tx.fee)}</td>`;
-    tbody.appendChild(tr);
-  });
+  if (txs.length === 0){
+    tbody.innerHTML = `<tr><td colspan="6" class="dim" style="text-align:center; padding:20px;">
+      Aucune ligne exploitable. Essaie de changer le format d'export ci-dessus (ex: « Générique » si ton fichier a des colonnes personnalisées),
+      ou vérifie que le fichier correspond bien à un export de transactions.</td></tr>`;
+  } else {
+    txs.slice(0,50).forEach(tx=>{
+      const priceWarn = tx.price === 0 ? ' <span class="dim" title="Prix non fourni par cet export — à compléter manuellement après import">⚠</span>' : '';
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${fmtDateTime(tx.date)}</td><td>${TX_TYPE_LABELS[tx.type]||tx.type}</td><td>${tx.asset.toUpperCase()}</td><td>${fmtQty(tx.qty)}</td><td>${fmtMoney(tx.price)}${priceWarn}</td><td>${fmtMoney(tx.fee)}</td>`;
+      tbody.appendChild(tr);
+    });
+    if (txs.length > 50){
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td colspan="6" class="dim" style="text-align:center;">… et ${txs.length-50} autre(s) transaction(s)</td>`;
+      tbody.appendChild(tr);
+    }
+  }
   document.getElementById("btn-csv-confirm").disabled = txs.length === 0;
 }
 
@@ -2356,13 +2601,43 @@ csvDrop.addEventListener("drop", (e)=>{
   e.preventDefault(); csvDrop.classList.remove("drag");
   if (e.dataTransfer.files[0]) processCsvFile(e.dataTransfer.files[0]);
 });
+document.getElementById("csv-exchange").addEventListener("change", ()=>{
+  // Re-parse si un fichier est déjà chargé et qu'on change le format manuellement
+  if (csvFileInput.files[0]) processCsvFile(csvFileInput.files[0]);
+});
 
 document.getElementById("btn-import-csv").addEventListener("click", ()=>{
   pendingCsvTxs = [];
   document.getElementById("csv-preview").style.display = "none";
   document.getElementById("btn-csv-confirm").disabled = true;
   csvFileInput.value = "";
+  document.getElementById("csv-exchange").value = "auto";
   openModal("modal-csv");
+});
+
+document.getElementById("btn-csv-confirm").addEventListener("click", async ()=>{
+  if (STATE.readOnly){ showToast("Mode lecture seule : import désactivé.", "warn"); return; }
+  if (!pendingCsvTxs.length){ showToast("Aucune transaction à importer.", "warn"); return; }
+
+  pendingCsvTxs.forEach(tx=> STATE.data.transactions.push(Object.assign({ id: uid(), notes:"" }, tx)));
+  addJournal("csv_import", `Import CSV — ${pendingCsvTxs.length} transaction(s) ajoutée(s).`);
+  const count = pendingCsvTxs.length;
+  pendingCsvTxs = [];
+
+  closeModal("modal-csv");
+  refreshAll();
+  showToast(`${count} transaction(s) importée(s).`);
+
+  try{
+    await fetchPrices();
+    refreshAll();
+  }catch(e){ /* non bloquant */ }
+
+  try{
+    await syncPush(true);
+  }catch(e){
+    showToast("Import enregistré localement, mais la synchro GitHub a échoué : " + e.message, "err");
+  }
 });
 
 /* ------------------------------------------------------------
@@ -2652,7 +2927,7 @@ document.getElementById("btn-force-sync").addEventListener("click", async ()=>{
   showToast("Synchronisation terminée.");
 });
 
-document.getElementById("btn-change-pass").addEventListener("click", ()=>{
+document.getElementById("btn-change-pass").addEventListener("click", async ()=>{
   const curr = document.getElementById("set-currpass").value;
   const next = document.getElementById("set-newpass").value;
   const vault = loadVault();
@@ -2660,11 +2935,23 @@ document.getElementById("btn-change-pass").addEventListener("click", ()=>{
   const token = decryptToken(vault.encToken, curr, vault.salt, vault.iv);
   if (!token){ showLockMsg2("Mot de passe actuel incorrect.", false); return; }
   if (next.length < 8){ showLockMsg2("Le nouveau mot de passe doit faire au moins 8 caractères.", false); return; }
+
   const { cipher, salt, iv } = deriveAndEncryptToken(token, next);
   saveVault(cipher, vault.owner, vault.repo, salt, iv);
-  addJournal("auth", "Mot de passe maître modifié.");
+
+  showLockMsg2("Mot de passe local mis à jour. Synchronisation du vault distant…", true);
+  try{
+    // Récupère le sha actuel du vault distant pour pouvoir l'écraser proprement
+    const remote = await fetchRemoteVault(vault.owner, vault.repo);
+    await saveRemoteVault(cipher, salt, iv, vault.owner, vault.repo, remote.exists ? remote.sha : null);
+    addJournal("auth", "Mot de passe maître modifié (local + vault distant synchronisés).");
+    showLockMsg2("Mot de passe modifié avec succès sur cet appareil et sur GitHub.", true);
+  }catch(e){
+    addJournal("auth", "Mot de passe maître modifié localement — échec de synchro du vault distant.");
+    showLockMsg2("Mot de passe modifié localement, mais la synchro du vault distant a échoué : " + e.message + ". Tes autres appareils garderont l'ancien mot de passe.", false);
+  }
+
   syncPush();
-  showLockMsg2("Mot de passe modifié avec succès.", true);
   document.getElementById("set-currpass").value = "";
   document.getElementById("set-newpass").value = "";
 });
