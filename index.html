@@ -1,1 +1,2729 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Ledger // Suivi de patrimoine crypto</title>
+<meta name="description" content="Suivi de patrimoine crypto avec simulateur fiscal français">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⛓</text></svg>">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+<style>
+/* ============================================================
+   LEDGER — Design tokens
+   Concept : terminal de salle des marchés. Fond quasi-noir,
+   accents vert phosphore façon ticker boursier, monospace pour
+   tous les chiffres (les chiffres sont LE contenu de cette app).
+   ============================================================ */
+:root{
+  /* Palette */
+  --bg-void:        #06090a;
+  --bg-panel:       #0c1210;
+  --bg-panel-2:     #101816;
+  --bg-raised:      #141f1c;
+  --line:           #1d2b27;
+  --line-soft:      #16201d;
 
+  --green-phosphor: #39ff8f;
+  --green-core:     #1fb86a;
+  --green-dim:      #0f6e42;
+  --green-glow:     rgba(57,255,143,0.18);
+
+  --red-loss:       #ff5d5d;
+  --red-dim:        #6e1f1f;
+  --amber:          #ffb648;
+
+  --text-hi:        #eaf5ee;
+  --text-mid:       #8fa89c;
+  --text-low:       #4d6359;
+
+  /* Type */
+  --font-display:   "Space Grotesk", "Segoe UI", sans-serif;
+  --font-mono:       "IBM Plex Mono", "SF Mono", Consolas, monospace;
+
+  /* Layout */
+  --radius:    3px;
+  --radius-lg: 6px;
+  --gutter:    20px;
+  --nav-w:     220px;
+  --topbar-h:  56px;
+}
+
+@font-face{
+  font-family:"Space Grotesk";
+  src: local("Space Grotesk");
+}
+
+*{box-sizing:border-box;}
+html,body{
+  margin:0;padding:0;
+  background:var(--bg-void);
+  color:var(--text-hi);
+  font-family:var(--font-display);
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+::selection{ background:var(--green-glow); color:var(--green-phosphor); }
+
+::-webkit-scrollbar{ width:8px; height:8px; }
+::-webkit-scrollbar-track{ background:var(--bg-panel); }
+::-webkit-scrollbar-thumb{ background:var(--line); border-radius:4px; }
+::-webkit-scrollbar-thumb:hover{ background:var(--green-dim); }
+
+a{ color:var(--green-phosphor); text-decoration:none; }
+
+button{
+  font-family:var(--font-display);
+  cursor:pointer;
+  border:none;
+  background:none;
+  color:inherit;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible{
+  outline:2px solid var(--green-phosphor);
+  outline-offset:2px;
+}
+
+input,select,textarea{
+  font-family:var(--font-mono);
+  background:var(--bg-panel-2);
+  border:1px solid var(--line);
+  color:var(--text-hi);
+  border-radius:var(--radius);
+  padding:9px 11px;
+  font-size:13px;
+  width:100%;
+}
+input:focus,select:focus,textarea:focus{
+  border-color:var(--green-dim);
+}
+input::placeholder{ color:var(--text-low); }
+label{
+  display:block;
+  font-size:11px;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  color:var(--text-mid);
+  margin-bottom:6px;
+  font-weight:500;
+}
+
+.mono{ font-family:var(--font-mono); }
+.num{ font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
+.up{ color:var(--green-phosphor); }
+.down{ color:var(--red-loss); }
+.muted{ color:var(--text-mid); }
+.dim{ color:var(--text-low); }
+
+/* ============ Reduced motion ============ */
+@media (prefers-reduced-motion: reduce){
+  *{ animation-duration:0.001ms !important; transition-duration:0.001ms !important; }
+}
+
+/* ============================================================
+   SCANLINE BACKDROP — signature element
+   Un voile de lignes horizontales très subtil + un scan vertical
+   qui balaie lentement, comme un radar de marché.
+   ============================================================ */
+.scan-backdrop{
+  position:fixed; inset:0; z-index:0; pointer-events:none;
+  background:
+    repeating-linear-gradient(0deg, rgba(57,255,143,0.025) 0px, rgba(57,255,143,0.025) 1px, transparent 1px, transparent 3px);
+}
+.scan-sweep{
+  position:fixed; top:0; bottom:0; width:140px; z-index:0; pointer-events:none;
+  background:linear-gradient(90deg, transparent, rgba(57,255,143,0.035), transparent);
+  animation:sweep 14s linear infinite;
+}
+@keyframes sweep{
+  0%{ left:-140px; }
+  100%{ left:100%; }
+}
+
+/* ============================================================
+   LOCK SCREEN
+   ============================================================ */
+#lock-screen{
+  position:fixed; inset:0; z-index:500;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--bg-void);
+  padding:20px;
+}
+.lock-card{
+  width:100%; max-width:380px;
+  background:var(--bg-panel);
+  border:1px solid var(--line);
+  border-radius:var(--radius-lg);
+  padding:32px 28px;
+  position:relative;
+  overflow:hidden;
+}
+.lock-card::before{
+  content:"";
+  position:absolute; top:0; left:0; right:0; height:2px;
+  background:linear-gradient(90deg, transparent, var(--green-phosphor), transparent);
+  animation:lockpulse 2.4s ease-in-out infinite;
+}
+@keyframes lockpulse{ 0%,100%{opacity:.3;} 50%{opacity:1;} }
+.lock-brand{
+  display:flex; align-items:center; gap:10px;
+  margin-bottom:28px;
+}
+.lock-brand .chip{
+  width:34px;height:34px;border-radius:var(--radius);
+  background:var(--green-glow);
+  display:flex;align-items:center;justify-content:center;
+  color:var(--green-phosphor);
+  font-weight:700;
+}
+.lock-brand b{ font-size:17px; letter-spacing:.02em; }
+.lock-brand span{ display:block; font-size:11px; color:var(--text-mid); font-family:var(--font-mono); }
+.lock-tabs{
+  display:flex; gap:2px; margin-bottom:20px;
+  background:var(--bg-panel-2); border-radius:var(--radius); padding:3px;
+}
+.lock-tab{
+  flex:1; text-align:center; padding:8px; font-size:12px;
+  border-radius:var(--radius); color:var(--text-mid);
+  transition:.15s;
+}
+.lock-tab.active{ background:var(--bg-raised); color:var(--green-phosphor); }
+.lock-pane{ display:none; }
+.lock-pane.active{ display:block; }
+.lock-field{ margin-bottom:14px; }
+.lock-btn{
+  width:100%;
+  background:var(--green-core);
+  color:#04140a;
+  font-weight:600;
+  padding:11px;
+  border-radius:var(--radius);
+  font-size:13px;
+  letter-spacing:.02em;
+  margin-top:6px;
+  transition:.15s;
+}
+.lock-btn:hover{ background:var(--green-phosphor); box-shadow:0 0 24px var(--green-glow); }
+.lock-btn.ghost{
+  background:transparent; border:1px solid var(--line); color:var(--text-mid);
+}
+.lock-btn.ghost:hover{ border-color:var(--green-dim); color:var(--green-phosphor); }
+.lock-msg{
+  font-size:12px; padding:10px 12px; border-radius:var(--radius);
+  margin-top:12px; display:none; font-family:var(--font-mono);
+}
+.lock-msg.show{ display:block; }
+.lock-msg.err{ background:rgba(255,93,93,0.08); color:var(--red-loss); border:1px solid var(--red-dim); }
+.lock-msg.ok{ background:var(--green-glow); color:var(--green-phosphor); border:1px solid var(--green-dim); }
+.lock-foot{
+  margin-top:18px; font-size:11px; color:var(--text-low); line-height:1.5;
+  border-top:1px solid var(--line-soft); padding-top:14px;
+}
+.lock-readonly-link{
+  display:block; text-align:center; margin-top:14px; font-size:12px; color:var(--text-mid);
+}
+.lock-readonly-link:hover{ color:var(--green-phosphor); }
+
+/* ============================================================
+   APP SHELL
+   ============================================================ */
+#app{ display:none; min-height:100vh; position:relative; z-index:1; }
+#app.visible{ display:block; }
+
+.topbar{
+  position:fixed; top:0; left:0; right:0; height:var(--topbar-h); z-index:100;
+  background:rgba(8,12,11,0.92);
+  backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line);
+  display:flex; align-items:center; justify-content:space-between;
+  padding:0 18px;
+}
+.topbar-left{ display:flex; align-items:center; gap:12px; }
+.brand-mini{ display:flex; align-items:center; gap:8px; font-weight:700; font-size:15px; }
+.brand-mini .dot{ width:8px; height:8px; border-radius:50%; background:var(--green-phosphor); box-shadow:0 0 8px var(--green-phosphor); }
+.menu-btn{
+  display:none;
+  width:34px;height:34px;align-items:center;justify-content:center;
+  border:1px solid var(--line); border-radius:var(--radius); color:var(--text-mid);
+}
+.topbar-right{ display:flex; align-items:center; gap:10px; }
+.live-pill{
+  display:flex; align-items:center; gap:6px;
+  font-family:var(--font-mono); font-size:11px; color:var(--text-mid);
+  padding:5px 10px; border:1px solid var(--line); border-radius:20px;
+}
+.live-pill .blip{ width:6px;height:6px;border-radius:50%; background:var(--green-phosphor); animation:blip 1.6s ease-in-out infinite; }
+@keyframes blip{ 0%,100%{opacity:1;} 50%{opacity:.25;} }
+.mode-pill{
+  font-family:var(--font-mono); font-size:10px; letter-spacing:.05em; text-transform:uppercase;
+  padding:4px 9px; border-radius:20px; border:1px solid var(--amber); color:var(--amber);
+}
+.icon-btn{
+  width:34px;height:34px; display:flex; align-items:center; justify-content:center;
+  border:1px solid var(--line); border-radius:var(--radius); color:var(--text-mid);
+  transition:.15s;
+}
+.icon-btn:hover{ border-color:var(--green-dim); color:var(--green-phosphor); }
+
+.sidebar{
+  position:fixed; top:var(--topbar-h); left:0; bottom:0; width:var(--nav-w); z-index:90;
+  background:var(--bg-panel); border-right:1px solid var(--line);
+  padding:18px 12px; overflow-y:auto;
+}
+.nav-item{
+  display:flex; align-items:center; gap:10px;
+  padding:10px 12px; border-radius:var(--radius); margin-bottom:2px;
+  color:var(--text-mid); font-size:13px; font-weight:500;
+  width:100%; text-align:left;
+  transition:.12s;
+}
+.nav-item .ic{ width:16px;height:16px; flex-shrink:0; opacity:.8; }
+.nav-item:hover{ background:var(--bg-panel-2); color:var(--text-hi); }
+.nav-item.active{ background:var(--green-glow); color:var(--green-phosphor); }
+.nav-item.active .ic{ opacity:1; }
+.nav-sep{ height:1px; background:var(--line-soft); margin:14px 4px; }
+.nav-label{ font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--text-low); padding:0 12px; margin-bottom:8px; margin-top:4px; }
+
+.main{
+  margin-left:var(--nav-w); padding-top:var(--topbar-h);
+  min-height:100vh;
+}
+.main-inner{ padding:24px; max-width:1400px; }
+
+.view{ display:none; }
+.view.active{ display:block; animation:viewin .25s ease; }
+@keyframes viewin{ from{ opacity:0; transform:translateY(4px);} to{opacity:1; transform:none;} }
+
+.page-head{
+  display:flex; align-items:flex-end; justify-content:space-between; flex-wrap:wrap; gap:12px;
+  margin-bottom:22px;
+}
+.page-head h1{ font-size:22px; margin:0 0 4px; letter-spacing:-.01em; }
+.page-head p{ margin:0; color:var(--text-mid); font-size:13px; }
+
+/* ============ Cards / panels ============ */
+.panel{
+  background:var(--bg-panel); border:1px solid var(--line); border-radius:var(--radius-lg);
+  padding:18px;
+}
+.panel-head{
+  display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;
+}
+.panel-head h3{ font-size:13px; margin:0; letter-spacing:.04em; text-transform:uppercase; color:var(--text-mid); font-weight:600; }
+
+.grid-stats{ display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:20px; }
+.stat-card{
+  background:var(--bg-panel); border:1px solid var(--line); border-radius:var(--radius-lg);
+  padding:16px 18px; position:relative; overflow:hidden;
+}
+.stat-card .label{ font-size:11px; color:var(--text-mid); text-transform:uppercase; letter-spacing:.04em; margin-bottom:8px; }
+.stat-card .value{ font-size:24px; font-weight:600; font-family:var(--font-mono); }
+.stat-card .sub{ font-size:12px; margin-top:6px; font-family:var(--font-mono); }
+.stat-card .spark{ position:absolute; right:0; bottom:0; opacity:.5; }
+
+.grid-2{ display:grid; grid-template-columns:1.4fr 1fr; gap:16px; }
+.grid-charts{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px; }
+
+.btn{
+  display:inline-flex; align-items:center; gap:7px;
+  padding:9px 16px; border-radius:var(--radius); font-size:13px; font-weight:600;
+  background:var(--bg-raised); border:1px solid var(--line); color:var(--text-hi);
+  transition:.15s;
+}
+.btn:hover{ border-color:var(--green-dim); }
+.btn-primary{ background:var(--green-core); color:#04140a; border-color:var(--green-core); }
+.btn-primary:hover{ background:var(--green-phosphor); box-shadow:0 0 20px var(--green-glow); }
+.btn-danger{ color:var(--red-loss); }
+.btn-danger:hover{ border-color:var(--red-dim); }
+.btn-sm{ padding:6px 11px; font-size:12px; }
+.btn-icon{ padding:8px; }
+
+table{ width:100%; border-collapse:collapse; font-size:13px; }
+thead th{
+  text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.04em;
+  color:var(--text-mid); font-weight:600; padding:8px 10px; border-bottom:1px solid var(--line);
+  white-space:nowrap;
+}
+tbody td{ padding:10px 10px; border-bottom:1px solid var(--line-soft); font-family:var(--font-mono); }
+tbody tr:hover{ background:var(--bg-panel-2); }
+.table-wrap{ overflow-x:auto; }
+
+.badge{
+  display:inline-flex; align-items:center; gap:4px;
+  font-size:11px; padding:3px 8px; border-radius:20px; font-family:var(--font-mono);
+  font-weight:500;
+}
+.badge-buy{ background:var(--green-glow); color:var(--green-phosphor); }
+.badge-sell{ background:rgba(255,93,93,0.1); color:var(--red-loss); }
+.badge-stake{ background:rgba(255,182,72,0.1); color:var(--amber); }
+.badge-transfer{ background:rgba(143,168,156,0.1); color:var(--text-mid); }
+
+.asset-row{ display:flex; align-items:center; gap:10px; }
+.asset-icon{
+  width:28px;height:28px; border-radius:50%; background:var(--bg-raised);
+  display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700;
+  color:var(--green-phosphor); border:1px solid var(--line); flex-shrink:0; overflow:hidden;
+}
+.asset-icon img{ width:100%;height:100%;object-fit:cover; }
+
+.modal-overlay{
+  position:fixed; inset:0; z-index:300; background:rgba(2,5,4,0.7); backdrop-filter:blur(2px);
+  display:none; align-items:center; justify-content:center; padding:16px;
+}
+.modal-overlay.show{ display:flex; }
+.modal{
+  background:var(--bg-panel); border:1px solid var(--line); border-radius:var(--radius-lg);
+  width:100%; max-width:480px; max-height:90vh; overflow-y:auto;
+  padding:22px;
+}
+.modal.modal-lg{ max-width:680px; }
+.modal-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; }
+.modal-head h3{ margin:0; font-size:16px; }
+.modal-close{ width:28px;height:28px; display:flex; align-items:center; justify-content:center; color:var(--text-mid); border-radius:var(--radius); }
+.modal-close:hover{ background:var(--bg-panel-2); color:var(--text-hi); }
+.field-row{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.field{ margin-bottom:14px; }
+.modal-actions{ display:flex; gap:10px; margin-top:18px; }
+.modal-actions .btn{ flex:1; justify-content:center; }
+
+.toast-stack{ position:fixed; bottom:20px; right:20px; z-index:400; display:flex; flex-direction:column; gap:8px; max-width:320px; }
+.toast{
+  background:var(--bg-raised); border:1px solid var(--line); border-left:3px solid var(--green-phosphor);
+  border-radius:var(--radius); padding:12px 14px; font-size:13px;
+  animation:toastin .2s ease;
+  box-shadow:0 8px 24px rgba(0,0,0,0.4);
+}
+.toast.err{ border-left-color:var(--red-loss); }
+.toast.warn{ border-left-color:var(--amber); }
+@keyframes toastin{ from{opacity:0; transform:translateX(12px);} to{opacity:1; transform:none;} }
+
+.empty-state{
+  text-align:center; padding:50px 20px; color:var(--text-mid);
+}
+.empty-state .ic{ font-size:32px; margin-bottom:10px; opacity:.5; }
+.empty-state p{ font-size:13px; margin:4px 0; }
+
+.tag-pill{
+  display:inline-flex; align-items:center; padding:3px 9px; border-radius:20px;
+  font-size:11px; background:var(--bg-panel-2); border:1px solid var(--line); color:var(--text-mid);
+}
+
+.tabs-row{ display:flex; gap:2px; background:var(--bg-panel-2); border-radius:var(--radius); padding:3px; margin-bottom:18px; width:fit-content; }
+.tab-btn{ padding:8px 16px; font-size:12.5px; border-radius:var(--radius); color:var(--text-mid); font-weight:500; }
+.tab-btn.active{ background:var(--bg-raised); color:var(--green-phosphor); }
+
+.fab{
+  position:fixed; bottom:24px; right:24px; z-index:80;
+  width:54px; height:54px; border-radius:50%;
+  background:var(--green-core); color:#04140a;
+  display:none; align-items:center; justify-content:center;
+  box-shadow:0 6px 24px rgba(57,255,143,0.3);
+  font-size:24px;
+}
+
+.kv-list{ display:flex; flex-direction:column; gap:10px; }
+.kv-row{ display:flex; justify-content:space-between; font-size:13px; padding:8px 0; border-bottom:1px solid var(--line-soft); }
+.kv-row .k{ color:var(--text-mid); }
+.kv-row .v{ font-family:var(--font-mono); font-weight:600; }
+
+.progress-bar{ height:6px; background:var(--bg-panel-2); border-radius:3px; overflow:hidden; }
+.progress-bar > div{ height:100%; background:var(--green-core); }
+
+.alert-box{
+  display:flex; gap:10px; padding:12px 14px; border-radius:var(--radius); font-size:12.5px;
+  background:rgba(255,182,72,0.08); border:1px solid rgba(255,182,72,0.25); color:#ffcf8c;
+  margin-bottom:16px; line-height:1.5;
+}
+.alert-box.info{ background:var(--green-glow); border-color:var(--green-dim); color:var(--text-hi); }
+
+.checkbox-row{ display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text-mid); }
+.checkbox-row input{ width:auto; }
+
+select.native{ appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238fa89c'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 12px center; padding-right:30px; }
+
+.skeleton{ background:linear-gradient(90deg, var(--bg-panel-2) 25%, var(--bg-raised) 50%, var(--bg-panel-2) 75%); background-size:200% 100%; animation:shimmer 1.4s infinite; border-radius:var(--radius); }
+@keyframes shimmer{ 0%{background-position:200% 0;} 100%{background-position:-200% 0;} }
+
+.csv-drop{
+  border:1.5px dashed var(--line); border-radius:var(--radius-lg); padding:30px 16px;
+  text-align:center; color:var(--text-mid); font-size:13px; cursor:pointer; transition:.15s;
+}
+.csv-drop:hover, .csv-drop.drag{ border-color:var(--green-dim); color:var(--green-phosphor); background:var(--green-glow); }
+
+.journal-item{ display:flex; gap:12px; padding:12px 0; border-bottom:1px solid var(--line-soft); }
+.journal-item .jicon{ width:30px;height:30px; border-radius:50%; background:var(--bg-raised); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:13px; }
+.journal-item .jbody{ flex:1; min-width:0; }
+.journal-item .jtitle{ font-size:13px; }
+.journal-item .jtime{ font-size:11px; color:var(--text-low); font-family:var(--font-mono); margin-top:2px; }
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 980px){
+  .grid-stats{ grid-template-columns:repeat(2,1fr); }
+  .grid-2{ grid-template-columns:1fr; }
+  .grid-charts{ grid-template-columns:1fr; }
+}
+@media (max-width: 760px){
+  :root{ --nav-w:240px; }
+  .menu-btn{ display:flex; }
+  .sidebar{ transform:translateX(-100%); transition:transform .2s ease; box-shadow:0 0 40px rgba(0,0,0,0.5); }
+  .sidebar.open{ transform:translateX(0); }
+  .main{ margin-left:0; }
+  .main-inner{ padding:16px; padding-bottom:90px; }
+  .grid-stats{ grid-template-columns:1fr 1fr; gap:10px; }
+  .stat-card .value{ font-size:19px; }
+  .field-row{ grid-template-columns:1fr; }
+  .fab{ display:flex; }
+  .page-head h1{ font-size:19px; }
+  .sidebar-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:85; display:none; }
+  .sidebar-backdrop.show{ display:block; }
+  .modal{ padding:18px; }
+  table{ font-size:12px; }
+}
+@media (max-width: 480px){
+  .grid-stats{ grid-template-columns:1fr 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="scan-backdrop"></div>
+<div class="scan-sweep"></div>
+
+<!-- ============================================================
+     LOCK SCREEN
+     ============================================================ -->
+<div id="lock-screen">
+  <div class="lock-card">
+    <div class="lock-brand">
+      <div class="chip">⛓</div>
+      <div>
+        <b>LEDGER</b>
+        <span>Patrimoine crypto · CGI FR</span>
+      </div>
+    </div>
+
+    <div class="lock-tabs">
+      <button class="lock-tab active" data-locktab="unlock">Déverrouiller</button>
+      <button class="lock-tab" data-locktab="setup">Première config</button>
+    </div>
+
+    <!-- UNLOCK PANE -->
+    <div class="lock-pane active" id="pane-unlock">
+      <div class="lock-field">
+        <label for="unlock-pass">Mot de passe maître</label>
+        <input type="password" id="unlock-pass" placeholder="••••••••" autocomplete="current-password">
+      </div>
+      <button class="btn lock-btn" id="btn-unlock">Déverrouiller</button>
+      <div class="lock-msg" id="unlock-msg"></div>
+      <a class="lock-readonly-link" id="link-readonly">Consulter en lecture seule sans mot de passe →</a>
+    </div>
+
+    <!-- SETUP PANE -->
+    <div class="lock-pane" id="pane-setup">
+      <div class="lock-field">
+        <label for="setup-token">Token GitHub (scope repo)</label>
+        <input type="password" id="setup-token" placeholder="ghp_xxxxxxxxxxxx" autocomplete="off">
+      </div>
+      <div class="field-row">
+        <div class="lock-field">
+          <label for="setup-owner">Propriétaire</label>
+          <input type="text" id="setup-owner" placeholder="Trolorder">
+        </div>
+        <div class="lock-field">
+          <label for="setup-repo">Dépôt</label>
+          <input type="text" id="setup-repo" placeholder="Crypto-Tracker">
+        </div>
+      </div>
+      <div class="lock-field">
+        <label for="setup-pass">Nouveau mot de passe maître</label>
+        <input type="password" id="setup-pass" placeholder="Min. 8 caractères" autocomplete="new-password">
+      </div>
+      <div class="lock-field">
+        <label for="setup-pass2">Confirmer le mot de passe</label>
+        <input type="password" id="setup-pass2" placeholder="••••••••" autocomplete="new-password">
+      </div>
+      <button class="btn lock-btn" id="btn-setup">Chiffrer et démarrer</button>
+      <div class="lock-msg" id="setup-msg"></div>
+    </div>
+
+    <div class="lock-foot">
+      Le token GitHub est chiffré (AES-256) avec ton mot de passe maître et stocké uniquement dans ce navigateur. Aucune donnée sensible ne quitte ton appareil hors du dépôt GitHub que tu contrôles.
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     APP SHELL
+     ============================================================ -->
+<div id="app">
+
+  <div class="topbar">
+    <div class="topbar-left">
+      <button class="menu-btn" id="btn-menu">☰</button>
+      <div class="brand-mini"><span class="dot"></span> LEDGER</div>
+    </div>
+    <div class="topbar-right">
+      <div class="live-pill" id="live-pill"><span class="blip"></span> <span id="live-pill-text">Cours en direct</span></div>
+      <div class="mode-pill" id="mode-pill" style="display:none;">LECTURE SEULE</div>
+      <button class="icon-btn" id="btn-refresh" title="Rafraîchir les cours">⟳</button>
+      <button class="icon-btn" id="btn-lock" title="Verrouiller">🔒</button>
+    </div>
+  </div>
+
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+  <nav class="sidebar" id="sidebar">
+    <div class="nav-label">Vue d'ensemble</div>
+    <button class="nav-item active" data-view="dashboard"><span class="ic">▦</span> Tableau de bord</button>
+    <button class="nav-item" data-view="assets"><span class="ic">◈</span> Possessions</button>
+    <button class="nav-item" data-view="transactions"><span class="ic">⇄</span> Transactions</button>
+    <button class="nav-item" data-view="charts"><span class="ic">∿</span> Analyses</button>
+
+    <div class="nav-sep"></div>
+    <div class="nav-label">Fiscalité</div>
+    <button class="nav-item" data-view="fiscal"><span class="ic">§</span> Simulateur CGI</button>
+
+    <div class="nav-sep"></div>
+    <div class="nav-label">Système</div>
+    <button class="nav-item" data-view="journal"><span class="ic">▤</span> Journal d'activité</button>
+    <button class="nav-item" data-view="settings"><span class="ic">⚙</span> Paramètres</button>
+  </nav>
+
+  <main class="main">
+    <div class="main-inner">
+
+      <!-- ============================== DASHBOARD ============================== -->
+      <section class="view active" id="view-dashboard">
+        <div class="page-head">
+          <div>
+            <h1>Tableau de bord</h1>
+            <p id="dash-sub">Vue d'ensemble de ton patrimoine crypto</p>
+          </div>
+          <button class="btn btn-primary" id="btn-quick-add">+ Nouvelle transaction</button>
+        </div>
+
+        <div class="grid-stats" id="dash-stats">
+          <!-- injecté en JS -->
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Évolution du patrimoine</h3>
+              <div class="tabs-row" style="margin:0;" id="dash-range-tabs">
+                <button class="tab-btn" data-range="7">7j</button>
+                <button class="tab-btn active" data-range="30">30j</button>
+                <button class="tab-btn" data-range="90">90j</button>
+                <button class="tab-btn" data-range="365">1an</button>
+                <button class="tab-btn" data-range="all">Tout</button>
+              </div>
+            </div>
+            <div style="height:280px;"><canvas id="chart-networth"></canvas></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>Répartition par actif</h3></div>
+            <div style="height:280px;"><canvas id="chart-allocation"></canvas></div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:16px;">
+          <div class="panel-head">
+            <h3>Possessions</h3>
+            <button class="btn btn-sm" data-view-link="assets">Tout voir →</button>
+          </div>
+          <div class="table-wrap">
+            <table id="dash-holdings-table">
+              <thead><tr><th>Actif</th><th>Quantité</th><th>Prix</th><th>Valeur</th><th>P&amp;L latent</th><th>24h</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================== ASSETS ============================== -->
+      <section class="view" id="view-assets">
+        <div class="page-head">
+          <div><h1>Possessions</h1><p>Détail de tes actifs et de leur prix de revient</p></div>
+          <button class="btn btn-primary" id="btn-add-tx-assets">+ Nouvelle transaction</button>
+        </div>
+        <div class="panel">
+          <div class="table-wrap">
+            <table id="assets-table">
+              <thead><tr>
+                <th>Actif</th><th>Quantité</th><th>PRU (CUMP)</th><th>Prix actuel</th>
+                <th>Coût total</th><th>Valeur actuelle</th><th>P&amp;L latent</th><th></th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="empty-state" id="assets-empty" style="display:none;">
+            <div class="ic">◈</div>
+            <p>Aucune possession enregistrée.</p>
+            <p class="dim">Ajoute ta première transaction pour démarrer le suivi.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================== TRANSACTIONS ============================== -->
+      <section class="view" id="view-transactions">
+        <div class="page-head">
+          <div><h1>Transactions</h1><p>Historique complet des mouvements</p></div>
+          <div style="display:flex; gap:10px;">
+            <button class="btn" id="btn-import-csv">⇧ Importer CSV</button>
+            <button class="btn btn-primary" id="btn-add-tx-main">+ Ajouter</button>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-bottom:16px;">
+          <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:end;">
+            <div class="field" style="margin:0; min-width:160px;">
+              <label>Filtrer par actif</label>
+              <select class="native" id="filter-asset"><option value="">Tous</option></select>
+            </div>
+            <div class="field" style="margin:0; min-width:160px;">
+              <label>Type</label>
+              <select class="native" id="filter-type">
+                <option value="">Tous</option>
+                <option value="buy">Achat</option>
+                <option value="sell">Vente</option>
+                <option value="stake_reward">Récompense staking</option>
+                <option value="mining">Minage</option>
+                <option value="transfer_in">Réception</option>
+                <option value="transfer_out">Envoi</option>
+              </select>
+            </div>
+            <div class="field" style="margin:0;">
+              <button class="btn btn-sm" id="btn-clear-filters">Réinitialiser</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="table-wrap">
+            <table id="tx-table">
+              <thead><tr>
+                <th>Date</th><th>Type</th><th>Actif</th><th>Quantité</th><th>Prix unit.</th><th>Total €</th><th>Frais</th><th>Source</th><th></th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="empty-state" id="tx-empty" style="display:none;">
+            <div class="ic">⇄</div>
+            <p>Aucune transaction.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================== CHARTS ============================== -->
+      <section class="view" id="view-charts">
+        <div class="page-head"><div><h1>Analyses</h1><p>Visualisations détaillées de la performance</p></div></div>
+
+        <div class="grid-charts">
+          <div class="panel">
+            <div class="panel-head"><h3>Patrimoine total (historique)</h3></div>
+            <div style="height:260px;"><canvas id="chart-networth-2"></canvas></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>P&amp;L réalisé vs latent</h3></div>
+            <div style="height:260px;"><canvas id="chart-pnl"></canvas></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>Coût d'acquisition vs valeur actuelle</h3></div>
+            <div style="height:260px;"><canvas id="chart-cost-vs-value"></canvas></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>Volume de transactions par mois</h3></div>
+            <div style="height:260px;"><canvas id="chart-volume"></canvas></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>Répartition par actif (détail)</h3></div>
+            <div style="height:260px;"><canvas id="chart-allocation-2"></canvas></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>Performance par actif (%)</h3></div>
+            <div style="height:260px;"><canvas id="chart-perf"></canvas></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================== FISCAL ============================== -->
+      <section class="view" id="view-fiscal">
+        <div class="page-head"><div><h1>Simulateur fiscal CGI</h1><p>Estimation de l'imposition sur tes cessions crypto (Article 150 VH bis et BNC/BIC)</p></div></div>
+
+        <div class="alert-box">
+          ⚠ Outil d'estimation pédagogique basé sur la méthode CUMP (Art. 150 VH bis du CGI). Ne remplace pas l'avis d'un professionnel ni la déclaration officielle (formulaire 2086 / 2042 C). Les cessions crypto→crypto ne sont pas taxables en France ; seules les cessions vers une monnaie ayant cours légal (€, $...) ou l'achat de biens/services déclenchent l'imposition.
+        </div>
+
+        <div class="tabs-row" id="fiscal-tabs">
+          <button class="tab-btn active" data-fiscaltab="cessions">Cessions (150 VH bis)</button>
+          <button class="tab-btn" data-fiscaltab="staking">Staking &amp; minage (BNC/BIC)</button>
+          <button class="tab-btn" data-fiscaltab="formulaire">Aperçu formulaire</button>
+        </div>
+
+        <!-- CESSIONS -->
+        <div class="fiscal-pane active" id="fiscalpane-cessions">
+          <div class="grid-2">
+            <div class="panel">
+              <div class="panel-head"><h3>Paramètres de l'année fiscale</h3></div>
+              <div class="field">
+                <label for="fiscal-year">Année d'imposition</label>
+                <select class="native" id="fiscal-year"></select>
+              </div>
+              <div class="field">
+                <label for="fiscal-tmi">Tranche marginale d'imposition (si option barème)</label>
+                <select class="native" id="fiscal-tmi">
+                  <option value="0">0%</option>
+                  <option value="0.11">11%</option>
+                  <option value="0.30" selected>30%</option>
+                  <option value="0.41">41%</option>
+                  <option value="0.45">45%</option>
+                </select>
+              </div>
+              <div class="checkbox-row" style="margin-top:6px;">
+                <input type="checkbox" id="fiscal-option-bareme">
+                <label for="fiscal-option-bareme" style="margin:0;">Simuler l'option pour le barème progressif (au lieu du PFU 30%)</label>
+              </div>
+              <div class="kv-list" style="margin-top:18px;">
+                <div class="kv-row"><span class="k">Valeur totale du patrimoine (réf. CUMP)</span><span class="v num" id="fiscal-total-portfolio">—</span></div>
+                <div class="kv-row"><span class="k">Cessions imposables sur l'année</span><span class="v num" id="fiscal-taxable-events">—</span></div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><h3>Résultat de la simulation</h3></div>
+              <div class="kv-list">
+                <div class="kv-row"><span class="k">Total des cessions (prix de vente)</span><span class="v num" id="r-total-sale">0,00 €</span></div>
+                <div class="kv-row"><span class="k">Total prix d'acquisition (CUMP)</span><span class="v num" id="r-total-cost">0,00 €</span></div>
+                <div class="kv-row"><span class="k">Plus-value brute</span><span class="v num" id="r-gross-gain">0,00 €</span></div>
+                <div class="kv-row"><span class="k">Abattement détention &gt;2 ans</span><span class="v num" id="r-abatement">0,00 €</span></div>
+                <div class="kv-row"><span class="k">Plus-value nette imposable</span><span class="v num" id="r-net-gain">0,00 €</span></div>
+                <div class="kv-row"><span class="k">Prélèvements sociaux (17,2%)</span><span class="v num" id="r-social">0,00 €</span></div>
+                <div class="kv-row"><span class="k">Impôt sur le revenu</span><span class="v num" id="r-ir">0,00 €</span></div>
+                <div class="kv-row" style="border-top:1px solid var(--line); padding-top:12px; margin-top:4px;">
+                  <span class="k" style="color:var(--text-hi); font-weight:600;">Total impôt estimé</span>
+                  <span class="v num up" style="font-size:17px;" id="r-total-tax">0,00 €</span>
+                </div>
+                <div class="kv-row"><span class="k">Net après impôt</span><span class="v num" id="r-net-after-tax">0,00 €</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel" style="margin-top:16px;">
+            <div class="panel-head"><h3>Détail des cessions imposables de l'année</h3></div>
+            <div class="table-wrap">
+              <table id="fiscal-sales-table">
+                <thead><tr><th>Date</th><th>Actif</th><th>Quantité</th><th>Prix vente</th><th>CUMP</th><th>Plus-value</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="empty-state" id="fiscal-sales-empty" style="display:none;"><p>Aucune cession imposable enregistrée pour cette année.</p></div>
+          </div>
+        </div>
+
+        <!-- STAKING / MINING -->
+        <div class="fiscal-pane" id="fiscalpane-staking" style="display:none;">
+          <div class="alert-box info">
+            Les récompenses de minage relèvent des BNC (micro-BNC : abattement forfaitaire de 34% si revenus annuels ≤ 77 700 €). Les récompenses de staking perçues par un particulier sont imposées au moment de leur cession ou conversion, généralement en tant que plus-value (régime des biens meubles ou BNC selon doctrine/jurisprudence — vérifie ta situation). Ce simulateur applique le régime micro-BNC à titre d'estimation.
+          </div>
+          <div class="grid-2">
+            <div class="panel">
+              <div class="panel-head"><h3>Revenus de l'année (BNC/BIC)</h3></div>
+              <div class="kv-list">
+                <div class="kv-row"><span class="k">Récompenses de staking (valorisées à réception)</span><span class="v num" id="r-stake-income">0,00 €</span></div>
+                <div class="kv-row"><span class="k">Récompenses de minage (valorisées à réception)</span><span class="v num" id="r-mining-income">0,00 €</span></div>
+                <div class="kv-row" style="border-top:1px solid var(--line); padding-top:12px;"><span class="k" style="font-weight:600; color:var(--text-hi);">Total revenu brut</span><span class="v num" id="r-bnc-gross">0,00 €</span></div>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><h3>Estimation micro-BNC</h3></div>
+              <div class="kv-list">
+                <div class="kv-row"><span class="k">Abattement forfaitaire (34%)</span><span class="v num" id="r-bnc-abat">0,00 €</span></div>
+                <div class="kv-row"><span class="k">Revenu imposable</span><span class="v num" id="r-bnc-taxable">0,00 €</span></div>
+                <div class="kv-row"><span class="k">Impôt sur le revenu (TMI)</span><span class="v num" id="r-bnc-ir">0,00 €</span></div>
+                <div class="kv-row"><span class="k">Cotisations sociales (≈22%)</span><span class="v num" id="r-bnc-social">0,00 €</span></div>
+                <div class="kv-row" style="border-top:1px solid var(--line); padding-top:12px;"><span class="k" style="font-weight:600; color:var(--text-hi);">Total charges estimées</span><span class="v num up" id="r-bnc-total">0,00 €</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="panel" style="margin-top:16px;">
+            <div class="panel-head"><h3>Détail des récompenses perçues</h3></div>
+            <div class="table-wrap">
+              <table id="fiscal-rewards-table">
+                <thead><tr><th>Date</th><th>Type</th><th>Actif</th><th>Quantité</th><th>Valeur à réception</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="empty-state" id="fiscal-rewards-empty" style="display:none;"><p>Aucune récompense de staking/minage enregistrée pour cette année.</p></div>
+          </div>
+        </div>
+
+        <!-- FORMULAIRE -->
+        <div class="fiscal-pane" id="fiscalpane-formulaire" style="display:none;">
+          <div class="alert-box">Aperçu informatif — reproduit la structure du formulaire 2086 (plus-values d'actifs numériques) à reporter en case 3AN du 2042 C. Vérifie toujours les libellés officiels sur impots.gouv.fr avant déclaration.</div>
+          <div class="panel">
+            <div class="panel-head"><h3>Formulaire 2086 — Récapitulatif des cessions</h3></div>
+            <div class="kv-list">
+              <div class="kv-row"><span class="k">A — Prix total de cession de l'année</span><span class="v num" id="f2086-a">0,00 €</span></div>
+              <div class="kv-row"><span class="k">B — Prix total d'acquisition global du portefeuille</span><span class="v num" id="f2086-b">0,00 €</span></div>
+              <div class="kv-row"><span class="k">C — Valeur globale du portefeuille avant cession</span><span class="v num" id="f2086-c">0,00 €</span></div>
+              <div class="kv-row"><span class="k">D — Plus ou moins-value de l'année (case 3AN/3BN)</span><span class="v num up" id="f2086-d">0,00 €</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================== JOURNAL ============================== -->
+      <section class="view" id="view-journal">
+        <div class="page-head"><div><h1>Journal d'activité</h1><p>Historique de toutes les actions effectuées dans l'application</p></div>
+        <button class="btn btn-sm" id="btn-clear-journal">Vider le journal</button></div>
+        <div class="panel">
+          <div id="journal-list"></div>
+          <div class="empty-state" id="journal-empty" style="display:none;"><p>Aucune activité enregistrée.</p></div>
+        </div>
+      </section>
+
+      <!-- ============================== SETTINGS ============================== -->
+      <section class="view" id="view-settings">
+        <div class="page-head"><div><h1>Paramètres</h1><p>Connexion, sécurité et préférences</p></div></div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-head"><h3>Connexion GitHub</h3></div>
+            <div class="kv-list">
+              <div class="kv-row"><span class="k">Dépôt</span><span class="v num" id="set-repo-info">—</span></div>
+              <div class="kv-row"><span class="k">Statut de synchronisation</span><span class="v" id="set-sync-status">—</span></div>
+              <div class="kv-row"><span class="k">Dernière synchro</span><span class="v num" id="set-last-sync">—</span></div>
+            </div>
+            <div style="display:flex; gap:10px; margin-top:16px;">
+              <button class="btn" id="btn-force-sync">⇄ Forcer la synchro</button>
+              <button class="btn btn-danger" id="btn-disconnect">Déconnecter cet appareil</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h3>Sécurité</h3></div>
+            <div class="field">
+              <label for="set-currpass">Mot de passe actuel</label>
+              <input type="password" id="set-currpass" placeholder="••••••••">
+            </div>
+            <div class="field">
+              <label for="set-newpass">Nouveau mot de passe</label>
+              <input type="password" id="set-newpass" placeholder="Min. 8 caractères">
+            </div>
+            <button class="btn btn-primary" id="btn-change-pass">Changer le mot de passe</button>
+            <div class="lock-msg" id="set-pass-msg"></div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:16px;">
+          <div class="panel-head"><h3>Préférences d'affichage</h3></div>
+          <div class="field-row">
+            <div class="field">
+              <label for="set-currency">Devise d'affichage</label>
+              <select class="native" id="set-currency">
+                <option value="eur" selected>EUR (€)</option>
+                <option value="usd">USD ($)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="set-refresh">Fréquence de rafraîchissement des cours</label>
+              <select class="native" id="set-refresh">
+                <option value="60000">1 minute</option>
+                <option value="180000" selected>3 minutes</option>
+                <option value="300000">5 minutes</option>
+                <option value="0">Manuel uniquement</option>
+              </select>
+            </div>
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="set-privacy-mode">
+            <label for="set-privacy-mode" style="margin:0;">Mode confidentialité (masquer les montants — touche rapide : Alt+P)</label>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:16px; border-color:var(--red-dim);">
+          <div class="panel-head"><h3 style="color:var(--red-loss);">Zone de danger</h3></div>
+          <p class="muted" style="font-size:12.5px; margin-top:0;">Ces actions sont irréversibles et affectent le dépôt GitHub distant.</p>
+          <div style="display:flex; gap:10px; flex-wrap:wrap;">
+            <button class="btn btn-danger" id="btn-export-data">⇩ Exporter toutes les données (JSON)</button>
+            <button class="btn btn-danger" id="btn-wipe-data">⌫ Effacer toutes les données</button>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <button class="fab" id="fab-add">+</button>
+</div>
+
+<!-- ============================================================
+     MODALS
+     ============================================================ -->
+
+<!-- TX MODAL -->
+<div class="modal-overlay" id="modal-tx">
+  <div class="modal">
+    <div class="modal-head"><h3 id="tx-modal-title">Nouvelle transaction</h3><button class="modal-close" data-close="modal-tx">✕</button></div>
+    <form id="form-tx">
+      <input type="hidden" id="tx-id">
+      <div class="field">
+        <label for="tx-type">Type de transaction</label>
+        <select class="native" id="tx-type" required>
+          <option value="buy">Achat (fiat → crypto)</option>
+          <option value="sell">Vente (crypto → fiat)</option>
+          <option value="stake_reward">Récompense de staking</option>
+          <option value="mining">Récompense de minage</option>
+          <option value="transfer_in">Réception (dépôt/virement entrant)</option>
+          <option value="transfer_out">Envoi (retrait/virement sortant)</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="tx-asset">Actif</label>
+          <input type="text" id="tx-asset" list="asset-suggestions" placeholder="BTC, ETH, XRP..." required autocomplete="off">
+          <datalist id="asset-suggestions"></datalist>
+        </div>
+        <div class="field">
+          <label for="tx-date">Date</label>
+          <input type="datetime-local" id="tx-date" required>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="tx-qty">Quantité</label>
+          <input type="number" id="tx-qty" step="any" min="0" placeholder="0.00" required>
+        </div>
+        <div class="field">
+          <label for="tx-price">Prix unitaire (€)</label>
+          <input type="number" id="tx-price" step="any" min="0" placeholder="0.00" required>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="tx-fee">Frais (€)</label>
+          <input type="number" id="tx-fee" step="any" min="0" value="0">
+        </div>
+        <div class="field">
+          <label for="tx-source">Source / Plateforme</label>
+          <input type="text" id="tx-source" placeholder="Kraken, Binance...">
+        </div>
+      </div>
+      <div class="field">
+        <label for="tx-notes">Notes (optionnel)</label>
+        <input type="text" id="tx-notes" placeholder="Note libre">
+      </div>
+      <div class="kv-row" style="background:var(--bg-panel-2); padding:10px 12px; border-radius:var(--radius); border-bottom:none;">
+        <span class="k">Total estimé</span><span class="v num" id="tx-total-preview">0,00 €</span>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" data-close="modal-tx">Annuler</button>
+        <button type="submit" class="btn btn-primary">Enregistrer</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- CSV IMPORT MODAL -->
+<div class="modal-overlay" id="modal-csv">
+  <div class="modal modal-lg">
+    <div class="modal-head"><h3>Importer un CSV d'exchange</h3><button class="modal-close" data-close="modal-csv">✕</button></div>
+    <div class="field">
+      <label for="csv-exchange">Format d'export</label>
+      <select class="native" id="csv-exchange">
+        <option value="auto">Détection automatique</option>
+        <option value="kraken">Kraken (ledgers.csv)</option>
+        <option value="binance">Binance (trade history)</option>
+        <option value="coinbase">Coinbase (transactions)</option>
+        <option value="generic">Générique (date, actif, type, quantité, prix)</option>
+      </select>
+    </div>
+    <div class="csv-drop" id="csv-drop">
+      <div style="font-size:24px; margin-bottom:8px;">⇧</div>
+      <p>Glisse ton fichier CSV ici, ou clique pour sélectionner</p>
+      <input type="file" id="csv-file" accept=".csv" style="display:none;">
+    </div>
+    <div id="csv-preview" style="margin-top:16px; display:none;">
+      <div class="panel-head"><h3 id="csv-preview-title">Aperçu</h3></div>
+      <div class="table-wrap" style="max-height:280px;"><table id="csv-preview-table"><thead></thead><tbody></tbody></table></div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-close="modal-csv">Annuler</button>
+      <button type="button" class="btn btn-primary" id="btn-csv-confirm" disabled>Importer les transactions</button>
+    </div>
+  </div>
+</div>
+
+<!-- CONFIRM MODAL -->
+<div class="modal-overlay" id="modal-confirm">
+  <div class="modal">
+    <div class="modal-head"><h3 id="confirm-title">Confirmer</h3><button class="modal-close" data-close="modal-confirm">✕</button></div>
+    <p id="confirm-body" class="muted" style="font-size:13px;"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-close="modal-confirm">Annuler</button>
+      <button type="button" class="btn btn-danger" id="btn-confirm-yes">Confirmer</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack"></div>
+
+<script>
+/* ============================================================
+   LEDGER — Application logic
+   ============================================================ */
+window.APP_VERSION = "1.0.0";
+
+/* ------------------------------------------------------------
+   0. STATE GLOBAL
+   ------------------------------------------------------------ */
+const STORAGE_KEY_VAULT   = "ledger_vault_v1";       // {encToken, owner, repo, salt, iv, kdfIter} -- localStorage
+const STORAGE_KEY_SESSION = "ledger_session_v1";     // token déchiffré en mémoire de session (sessionStorage)
+const DATA_FILE_PATH      = "data/portfolio.json";   // chemin du fichier dans le repo GitHub
+const COINGECKO_BASE      = "https://api.coingecko.com/api/v3";
+
+let STATE = {
+  unlocked: false,
+  readOnly: false,
+  github: { token: null, owner: null, repo: null, sha: null }, // sha = sha du dernier fichier connu (pour update)
+  data: {
+    transactions: [],   // {id, type, asset, qty, price, fee, date, source, notes}
+    journal: [],         // {id, ts, type, message}
+    settings: { currency:"eur", refreshMs:180000, privacy:false }
+  },
+  prices: {},           // { btc: {eur: 12345, eur_24h_change: 1.2, ...}, ... }
+  priceMeta: {},        // { btc: {id:'bitcoin', symbol:'BTC', image:'...'} }
+  coinList: null,       // cache de la liste coingecko (id/symbol/name)
+  lastSync: null,
+  dirty: false,         // données modifiées localement, pas encore push GitHub
+  refreshTimer: null,
+  charts: {}
+};
+let currentDashRange = 30; // période sélectionnée pour le graphique d'évolution du patrimoine (jours, ou "all")
+
+/* ------------------------------------------------------------
+   1. UTILITAIRES GÉNÉRAUX
+   ------------------------------------------------------------ */
+function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,9); }
+
+function fmtMoney(v, currency){
+  currency = currency || (STATE.data.settings && STATE.data.settings.currency) || "eur";
+  if (v === null || v === undefined || isNaN(v)) v = 0;
+  if (STATE.data.settings && STATE.data.settings.privacy) return "•••••";
+  const symbol = currency === "usd" ? "$" : "€";
+  const neg = v < 0;
+  const abs = Math.abs(v);
+  let str = abs.toLocaleString("fr-FR", {minimumFractionDigits:2, maximumFractionDigits:2});
+  return (neg?"-":"") + str + " " + symbol;
+}
+function fmtQty(v){
+  if (v === null || v === undefined || isNaN(v)) v = 0;
+  if (STATE.data.settings && STATE.data.settings.privacy) return "•••••";
+  let abs = Math.abs(v);
+  let max = abs < 1 ? 8 : (abs < 100 ? 6 : 4);
+  return v.toLocaleString("fr-FR", {minimumFractionDigits:0, maximumFractionDigits:max});
+}
+function fmtPct(v){
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  const s = v >= 0 ? "+" : "";
+  return s + v.toLocaleString("fr-FR", {minimumFractionDigits:2, maximumFractionDigits:2}) + " %";
+}
+function fmtDate(d){
+  const dt = (d instanceof Date) ? d : new Date(d);
+  return dt.toLocaleDateString("fr-FR", {day:"2-digit", month:"2-digit", year:"numeric"});
+}
+function fmtDateTime(d){
+  const dt = (d instanceof Date) ? d : new Date(d);
+  return dt.toLocaleDateString("fr-FR", {day:"2-digit", month:"2-digit", year:"numeric"}) + " " +
+         dt.toLocaleTimeString("fr-FR", {hour:"2-digit", minute:"2-digit"});
+}
+function escapeHtml(s){
+  if (s === null || s === undefined) return "";
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function showToast(msg, type){
+  const stack = document.getElementById("toast-stack");
+  const el = document.createElement("div");
+  el.className = "toast" + (type === "err" ? " err" : type === "warn" ? " warn" : "");
+  el.textContent = msg;
+  stack.appendChild(el);
+  setTimeout(()=>{ el.style.opacity="0"; el.style.transition="opacity .25s"; setTimeout(()=>el.remove(), 250); }, 3800);
+}
+function openModal(id){ document.getElementById(id).classList.add("show"); }
+function closeModal(id){ document.getElementById(id).classList.remove("show"); }
+document.querySelectorAll("[data-close]").forEach(btn=>{
+  btn.addEventListener("click", ()=> closeModal(btn.dataset.close));
+});
+document.querySelectorAll(".modal-overlay").forEach(ov=>{
+  ov.addEventListener("click", (e)=>{ if (e.target === ov) ov.classList.remove("show"); });
+});
+
+function addJournal(type, message){
+  STATE.data.journal.unshift({ id:uid(), ts:Date.now(), type, message });
+  if (STATE.data.journal.length > 500) STATE.data.journal.length = 500;
+  STATE.dirty = true;
+}
+
+let confirmCallback = null;
+function askConfirm(title, body, onYes){
+  document.getElementById("confirm-title").textContent = title;
+  document.getElementById("confirm-body").textContent = body;
+  confirmCallback = onYes;
+  openModal("modal-confirm");
+}
+document.getElementById("btn-confirm-yes").addEventListener("click", ()=>{
+  closeModal("modal-confirm");
+  if (confirmCallback) confirmCallback();
+  confirmCallback = null;
+});
+
+/* ------------------------------------------------------------
+   2. CHIFFREMENT (CryptoJS) — protège le token GitHub
+   ------------------------------------------------------------ */
+function deriveAndEncryptToken(token, password){
+  const salt = CryptoJS.lib.WordArray.random(128/8);
+  const iv   = CryptoJS.lib.WordArray.random(128/8);
+  const key  = CryptoJS.PBKDF2(password, salt, { keySize:256/32, iterations:150000 });
+  const encrypted = CryptoJS.AES.encrypt(token, key, { iv:iv, mode:CryptoJS.mode.CBC, padding:CryptoJS.pad.Pkcs7 });
+  return {
+    cipher: encrypted.toString(),
+    salt: salt.toString(),
+    iv: iv.toString()
+  };
+}
+function decryptToken(cipherText, password, saltHex, ivHex){
+  try{
+    const salt = CryptoJS.enc.Hex.parse(saltHex);
+    const iv   = CryptoJS.enc.Hex.parse(ivHex);
+    const key  = CryptoJS.PBKDF2(password, salt, { keySize:256/32, iterations:150000 });
+    const decrypted = CryptoJS.AES.decrypt(cipherText, key, { iv:iv, mode:CryptoJS.mode.CBC, padding:CryptoJS.pad.Pkcs7 });
+    const str = decrypted.toString(CryptoJS.enc.Utf8);
+    if (!str) return null;
+    return str;
+  }catch(e){
+    return null;
+  }
+}
+function saveVault(encToken, owner, repo, salt, iv){
+  localStorage.setItem(STORAGE_KEY_VAULT, JSON.stringify({ encToken, owner, repo, salt, iv, v:1 }));
+}
+function loadVault(){
+  try{ return JSON.parse(localStorage.getItem(STORAGE_KEY_VAULT)); }catch(e){ return null; }
+}
+function hasVault(){ return !!loadVault(); }
+
+/* ------------------------------------------------------------
+   3. API GITHUB — stockage des données (lecture/écriture JSON)
+   ------------------------------------------------------------ */
+const GH_API = "https://api.github.com";
+
+async function ghRequest(path, opts){
+  opts = opts || {};
+  const headers = Object.assign({
+    "Accept":"application/vnd.github+json"
+  }, opts.headers || {});
+  if (STATE.github.token) headers["Authorization"] = "Bearer " + STATE.github.token;
+  const res = await fetch(GH_API + path, Object.assign({}, opts, { headers }));
+  return res;
+}
+
+async function ghFetchFile(){
+  const { owner, repo } = STATE.github;
+  const res = await ghRequest(`/repos/${owner}/${repo}/contents/${DATA_FILE_PATH}`, { method:"GET" });
+  if (res.status === 404){
+    return { exists:false, content:null, sha:null };
+  }
+  if (!res.ok){
+    throw new Error("Erreur GitHub (" + res.status + ") lors de la lecture du fichier.");
+  }
+  const json = await res.json();
+  const decoded = decodeURIComponent(escape(atob(json.content.replace(/\n/g,""))));
+  let parsed;
+  try{ parsed = JSON.parse(decoded); }catch(e){ throw new Error("Le fichier de données distant est corrompu (JSON invalide)."); }
+  return { exists:true, content:parsed, sha:json.sha };
+}
+
+async function ghSaveFile(dataObj, message){
+  const { owner, repo } = STATE.github;
+  const body = {
+    message: message || "Mise à jour des données — Ledger",
+    content: btoa(unescape(encodeURIComponent(JSON.stringify(dataObj, null, 2))))
+  };
+  if (STATE.github.sha) body.sha = STATE.github.sha;
+  const res = await ghRequest(`/repos/${owner}/${repo}/contents/${DATA_FILE_PATH}`, {
+    method:"PUT",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok){
+    const errBody = await res.json().catch(()=>({}));
+    throw new Error("Échec de la sauvegarde GitHub (" + res.status + ") — " + (errBody.message || ""));
+  }
+  const json = await res.json();
+  STATE.github.sha = json.content.sha;
+  return json;
+}
+
+async function ghTestToken(token, owner, repo){
+  const headers = { "Authorization":"Bearer " + token, "Accept":"application/vnd.github+json" };
+  const res = await fetch(`${GH_API}/repos/${owner}/${repo}`, { headers });
+  if (res.status === 404) throw new Error("Dépôt introuvable. Vérifie le propriétaire/nom du dépôt, ou que le token a accès.");
+  if (res.status === 401) throw new Error("Token invalide ou expiré.");
+  if (!res.ok) throw new Error("Impossible de vérifier l'accès au dépôt (" + res.status + ").");
+  const json = await res.json();
+  if (!json.permissions || !json.permissions.push){
+    throw new Error("Ce token n'a pas les droits d'écriture sur ce dépôt (scope 'repo' requis).");
+  }
+  return json;
+}
+
+async function syncPull(){
+  try{
+    const result = await ghFetchFile();
+    if (result.exists){
+      STATE.github.sha = result.sha;
+      STATE.data = Object.assign({ transactions:[], journal:[], settings:{currency:"eur",refreshMs:180000,privacy:false} }, result.content);
+    } else {
+      STATE.github.sha = null;
+    }
+    STATE.lastSync = Date.now();
+    updateSyncStatusUI(true);
+    return true;
+  }catch(e){
+    updateSyncStatusUI(false, e.message);
+    showToast("Synchro impossible : " + e.message, "err");
+    return false;
+  }
+}
+
+let pushTimer = null;
+async function syncPush(immediate){
+  if (STATE.readOnly) return;
+  STATE.dirty = true;
+  if (pushTimer) clearTimeout(pushTimer);
+  const doPush = async ()=>{
+    try{
+      await ghSaveFile(STATE.data, "Mise à jour Ledger — " + new Date().toISOString());
+      STATE.dirty = false;
+      STATE.lastSync = Date.now();
+      updateSyncStatusUI(true);
+    }catch(e){
+      updateSyncStatusUI(false, e.message);
+      showToast("Échec de synchro : " + e.message, "err");
+    }
+  };
+  if (immediate){ await doPush(); }
+  else { pushTimer = setTimeout(doPush, 1500); }
+}
+
+function updateSyncStatusUI(ok, errMsg){
+  const statusEl = document.getElementById("set-sync-status");
+  const lastEl = document.getElementById("set-last-sync");
+  if (!statusEl) return;
+  if (STATE.readOnly){
+    statusEl.innerHTML = '<span class="muted">Lecture seule</span>';
+  } else if (ok){
+    statusEl.innerHTML = '<span class="up">● Synchronisé</span>';
+  } else {
+    statusEl.innerHTML = '<span class="down">● Erreur</span> <span class="dim">' + escapeHtml(errMsg||"") + '</span>';
+  }
+  if (STATE.lastSync) lastEl.textContent = fmtDateTime(STATE.lastSync);
+  const repoInfo = document.getElementById("set-repo-info");
+  if (repoInfo && STATE.github.owner) repoInfo.textContent = STATE.github.owner + "/" + STATE.github.repo;
+}
+
+
+/* ------------------------------------------------------------
+   4. AUTHENTIFICATION — setup / unlock / lock / lecture seule
+   ------------------------------------------------------------ */
+function showLockMsg(elId, text, ok){
+  const el = document.getElementById(elId);
+  el.textContent = text;
+  el.className = "lock-msg show " + (ok ? "ok" : "err");
+}
+
+document.querySelectorAll(".lock-tab").forEach(tab=>{
+  tab.addEventListener("click", ()=>{
+    document.querySelectorAll(".lock-tab").forEach(t=>t.classList.remove("active"));
+    document.querySelectorAll(".lock-pane").forEach(p=>p.classList.remove("active"));
+    tab.classList.add("active");
+    document.getElementById("pane-" + tab.dataset.locktab).classList.add("active");
+  });
+});
+
+// Si un vault existe déjà, on cache l'onglet "Première config" et on ouvre direct sur déverrouillage
+function initLockScreenMode(){
+  const vault = loadVault();
+  const setupTab = document.querySelector('[data-locktab="setup"]');
+  if (vault){
+    document.querySelector('[data-locktab="unlock"]').click();
+  } else {
+    setupTab.click();
+  }
+}
+
+document.getElementById("btn-setup").addEventListener("click", async ()=>{
+  const token = document.getElementById("setup-token").value.trim();
+  const owner = document.getElementById("setup-owner").value.trim() || "Trolorder";
+  const repo  = document.getElementById("setup-repo").value.trim() || "Crypto-Tracker";
+  const pass  = document.getElementById("setup-pass").value;
+  const pass2 = document.getElementById("setup-pass2").value;
+
+  if (!token){ showLockMsg("setup-msg", "Le token GitHub est requis.", false); return; }
+  if (pass.length < 8){ showLockMsg("setup-msg", "Le mot de passe doit faire au moins 8 caractères.", false); return; }
+  if (pass !== pass2){ showLockMsg("setup-msg", "Les mots de passe ne correspondent pas.", false); return; }
+
+  showLockMsg("setup-msg", "Vérification de l'accès au dépôt GitHub…", true);
+  try{
+    await ghTestToken(token, owner, repo);
+  }catch(e){
+    showLockMsg("setup-msg", e.message, false);
+    return;
+  }
+
+  const { cipher, salt, iv } = deriveAndEncryptToken(token, pass);
+  saveVault(cipher, owner, repo, salt, iv);
+
+  STATE.github.token = token;
+  STATE.github.owner = owner;
+  STATE.github.repo  = repo;
+  STATE.unlocked = true;
+  STATE.readOnly = false;
+
+  showLockMsg("setup-msg", "Connexion établie. Initialisation des données…", true);
+  await syncPull();
+  if (!STATE.data.transactions) STATE.data.transactions = [];
+  if (!STATE.data.journal) STATE.data.journal = [];
+  addJournal("auth", "Première configuration effectuée — dépôt " + owner + "/" + repo + " connecté.");
+  await syncPush(true);
+
+  sessionStorage.setItem(STORAGE_KEY_SESSION, token);
+  enterApp();
+});
+
+document.getElementById("btn-unlock").addEventListener("click", async ()=>{
+  const pass = document.getElementById("unlock-pass").value;
+  const vault = loadVault();
+  if (!vault){ showLockMsg("unlock-msg", "Aucune configuration trouvée. Utilise l'onglet « Première config ».", false); return; }
+  const token = decryptToken(vault.encToken, pass, vault.salt, vault.iv);
+  if (!token){ showLockMsg("unlock-msg", "Mot de passe incorrect.", false); return; }
+
+  STATE.github.token = token;
+  STATE.github.owner = vault.owner;
+  STATE.github.repo  = vault.repo;
+  STATE.unlocked = true;
+  STATE.readOnly = false;
+
+  showLockMsg("unlock-msg", "Déverrouillage… synchronisation en cours.", true);
+  const ok = await syncPull();
+  if (!ok && !STATE.github.sha){
+    // pull a échoué ET pas de fichier connu -> on continue avec données vides mais on prévient
+  }
+  addJournal("auth", "Connexion déverrouillée sur cet appareil.");
+  sessionStorage.setItem(STORAGE_KEY_SESSION, token);
+  enterApp();
+});
+
+document.getElementById("link-readonly").addEventListener("click", async (e)=>{
+  e.preventDefault();
+  const vault = loadVault();
+  if (!vault){
+    showToast("Aucun dépôt configuré sur cet appareil pour la lecture seule.", "err");
+    return;
+  }
+  STATE.readOnly = true;
+  STATE.unlocked = true;
+  STATE.github.token = null; // pas de token en lecture seule -> appels publics uniquement
+  STATE.github.owner = vault.owner;
+  STATE.github.repo  = vault.repo;
+
+  // Lecture seule : on tente de lire le fichier via l'API publique non authentifiée (repo doit être public)
+  try{
+    const res = await fetch(`${GH_API}/repos/${vault.owner}/${vault.repo}/contents/${DATA_FILE_PATH}`);
+    if (res.ok){
+      const json = await res.json();
+      const decoded = decodeURIComponent(escape(atob(json.content.replace(/\n/g,""))));
+      STATE.data = Object.assign({ transactions:[], journal:[], settings:{currency:"eur",refreshMs:180000,privacy:false} }, JSON.parse(decoded));
+      STATE.github.sha = json.sha;
+    } else if (res.status === 404){
+      showToast("Aucune donnée distante trouvée encore.", "warn");
+    } else {
+      throw new Error("HTTP " + res.status);
+    }
+  }catch(err){
+    showToast("Lecture seule impossible (dépôt privé ou inaccessible) : " + err.message, "err");
+    return;
+  }
+  enterApp();
+});
+
+function enterApp(){
+  document.getElementById("lock-screen").style.display = "none";
+  document.getElementById("app").classList.add("visible");
+  document.getElementById("mode-pill").style.display = STATE.readOnly ? "inline-flex" : "none";
+  if (!STATE.data.settings) STATE.data.settings = { currency:"eur", refreshMs:180000, privacy:false };
+  applySettingsToUI();
+  initAssetSuggestions();
+  populateFiscalYears();
+  refreshAll();
+  startAutoRefresh();
+  updateSyncStatusUI(true);
+}
+
+function lockApp(){
+  if (STATE.refreshTimer) clearInterval(STATE.refreshTimer);
+  sessionStorage.removeItem(STORAGE_KEY_SESSION);
+  STATE.unlocked = false;
+  STATE.github.token = null;
+  document.getElementById("app").classList.remove("visible");
+  document.getElementById("lock-screen").style.display = "flex";
+  document.getElementById("unlock-pass").value = "";
+  initLockScreenMode();
+}
+document.getElementById("btn-lock").addEventListener("click", lockApp);
+document.getElementById("btn-disconnect").addEventListener("click", ()=>{
+  askConfirm(
+    "Déconnecter cet appareil",
+    "Le token chiffré sera supprimé de ce navigateur. Tes données restent intactes sur GitHub — tu pourras te reconnecter avec ton token.",
+    ()=>{
+      localStorage.removeItem(STORAGE_KEY_VAULT);
+      sessionStorage.removeItem(STORAGE_KEY_SESSION);
+      location.reload();
+    }
+  );
+});
+
+// Tentative de reprise de session (token déjà déchiffré en mémoire de session, ex: rechargement de page)
+async function tryResumeSession(){
+  const vault = loadVault();
+  const token = sessionStorage.getItem(STORAGE_KEY_SESSION);
+  if (vault && token){
+    STATE.github.token = token;
+    STATE.github.owner = vault.owner;
+    STATE.github.repo  = vault.repo;
+    STATE.unlocked = true;
+    STATE.readOnly = false;
+    await syncPull();
+    enterApp();
+    return true;
+  }
+  return false;
+}
+
+/* ------------------------------------------------------------
+   5. COURS TEMPS RÉEL — CoinGecko
+   ------------------------------------------------------------ */
+
+// Mapping rapide symbole -> id coingecko pour les cas ambigus/fréquents
+const SYMBOL_HINTS = {
+  btc:"bitcoin", eth:"ethereum", xrp:"ripple", usdt:"tether", bnb:"binancecoin",
+  sol:"solana", usdc:"usd-coin", ada:"cardano", doge:"dogecoin", trx:"tron",
+  dot:"polkadot", matic:"matic-network", ltc:"litecoin", shib:"shiba-inu",
+  avax:"avalanche-2", link:"chainlink", atom:"cosmos", xlm:"stellar",
+  algo:"algorand", near:"near", etc:"ethereum-classic", xmr:"monero",
+  fil:"filecoin", apt:"aptos", arb:"arbitrum", op:"optimism", sui:"sui",
+  ton:"the-open-network", icp:"internet-computer", vet:"vechain", hbar:"hedera-hashgraph"
+};
+
+async function ensureCoinList(){
+  if (STATE.coinList) return STATE.coinList;
+  try{
+    const res = await fetch(`${COINGECKO_BASE}/coins/list`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    STATE.coinList = await res.json();
+  }catch(e){
+    STATE.coinList = [];
+  }
+  return STATE.coinList;
+}
+
+function resolveCoinId(symbolOrName){
+  const key = symbolOrName.trim().toLowerCase();
+  if (SYMBOL_HINTS[key]) return SYMBOL_HINTS[key];
+  if (STATE.coinList && STATE.coinList.length){
+    const bySymbol = STATE.coinList.filter(c => c.symbol.toLowerCase() === key);
+    if (bySymbol.length === 1) return bySymbol[0].id;
+    if (bySymbol.length > 1){
+      // privilégie l'id le plus court / le plus "canonique"
+      bySymbol.sort((a,b)=> a.id.length - b.id.length);
+      return bySymbol[0].id;
+    }
+    const byId = STATE.coinList.find(c => c.id === key);
+    if (byId) return byId.id;
+    const byName = STATE.coinList.find(c => c.name.toLowerCase() === key);
+    if (byName) return byName.id;
+  }
+  return key; // tentative directe
+}
+
+function getAllAssetSymbols(){
+  const set = new Set();
+  STATE.data.transactions.forEach(tx => set.add(tx.asset.toLowerCase()));
+  return Array.from(set);
+}
+
+async function fetchPrices(){
+  const symbols = getAllAssetSymbols();
+  if (symbols.length === 0) return;
+  await ensureCoinList();
+  const ids = symbols.map(s => resolveCoinId(s));
+  const idToSymbol = {};
+  ids.forEach((id, i) => idToSymbol[id] = symbols[i]);
+
+  try{
+    setLivePillState("loading");
+    const res = await fetch(`${COINGECKO_BASE}/simple/price?ids=${encodeURIComponent(ids.join(","))}&vs_currencies=eur,usd&include_24hr_change=true&include_market_cap=true`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const json = await res.json();
+    ids.forEach(id => {
+      const sym = idToSymbol[id];
+      if (json[id]) STATE.prices[sym] = json[id];
+    });
+    setLivePillState("ok");
+  }catch(e){
+    setLivePillState("error");
+    console.warn("Erreur de récupération des prix :", e.message);
+  }
+
+  // métadonnées (icônes) — en best-effort, une seule fois par actif
+  try{
+    const missingMeta = ids.filter(id => !STATE.priceMeta[idToSymbol[id]]);
+    if (missingMeta.length){
+      const res2 = await fetch(`${COINGECKO_BASE}/coins/markets?vs_currency=eur&ids=${encodeURIComponent(missingMeta.join(","))}`);
+      if (res2.ok){
+        const arr = await res2.json();
+        arr.forEach(c => { STATE.priceMeta[idToSymbol[c.id] || c.symbol] = { id:c.id, symbol:c.symbol.toUpperCase(), name:c.name, image:c.image }; });
+      }
+    }
+  }catch(e){ /* non bloquant */ }
+}
+
+function setLivePillState(state){
+  const pill = document.getElementById("live-pill");
+  const txt = document.getElementById("live-pill-text");
+  if (state === "loading"){ txt.textContent = "Mise à jour…"; pill.style.borderColor="var(--line)"; }
+  else if (state === "ok"){ txt.textContent = "Cours en direct"; pill.style.borderColor="var(--line)"; }
+  else { txt.textContent = "Cours indisponibles"; pill.style.borderColor="var(--red-dim)"; }
+}
+
+function getPrice(symbol, currency){
+  currency = currency || (STATE.data.settings.currency || "eur");
+  const p = STATE.prices[symbol.toLowerCase()];
+  if (!p) return null;
+  return p[currency] !== undefined ? p[currency] : null;
+}
+function getChange24h(symbol, currency){
+  currency = currency || (STATE.data.settings.currency || "eur");
+  const p = STATE.prices[symbol.toLowerCase()];
+  if (!p) return null;
+  const key = currency + "_24h_change";
+  return p[key] !== undefined ? p[key] : null;
+}
+
+async function fetchMarketChart(symbol, days){
+  const id = resolveCoinId(symbol);
+  try{
+    const res = await fetch(`${COINGECKO_BASE}/coins/${id}/market_chart?vs_currency=eur&days=${days}`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const json = await res.json();
+    return json.prices || []; // [[ts, price], ...]
+  }catch(e){
+    return [];
+  }
+}
+
+function startAutoRefresh(){
+  if (STATE.refreshTimer) clearInterval(STATE.refreshTimer);
+  const ms = STATE.data.settings.refreshMs || 180000;
+  if (ms > 0){
+    STATE.refreshTimer = setInterval(()=> refreshPricesOnly(), ms);
+  }
+}
+async function refreshPricesOnly(){
+  await fetchPrices();
+  renderDashboard();
+  renderAssets();
+}
+/* ------------------------------------------------------------
+   6. MOTEUR CUMP — Coût Unitaire Moyen Pondéré (Art. 150 VH bis CGI)
+   ------------------------------------------------------------
+   Principe légal : le PRU (prix de revient unitaire) d'un actif
+   numérique est recalculé à CHAQUE acquisition comme une moyenne
+   pondérée de tout le portefeuille de cet actif. Lors d'une cession,
+   la plus-value = prix de cession - (quantité cédée × CUMP au
+   moment de la cession). Le CUMP ne change pas lors d'une vente.
+   ------------------------------------------------------------ */
+
+// Calcule, pour un actif donné, l'évolution du CUMP transaction par transaction
+// Retourne un tableau de transactions enrichies + l'état final {qty, totalCost, cump}
+function computeCumpForAsset(symbol){
+  const txs = STATE.data.transactions
+    .filter(t => t.asset.toLowerCase() === symbol.toLowerCase())
+    .slice()
+    .sort((a,b)=> new Date(a.date) - new Date(b.date));
+
+  let qty = 0, totalCost = 0;
+  const enriched = [];
+
+  txs.forEach(tx=>{
+    const q = parseFloat(tx.qty) || 0;
+    const price = parseFloat(tx.price) || 0;
+    const fee = parseFloat(tx.fee) || 0;
+    const isAcquisition = (tx.type === "buy" || tx.type === "stake_reward" || tx.type === "mining" || tx.type === "transfer_in");
+    const isDisposal     = (tx.type === "sell" || tx.type === "transfer_out");
+
+    const cumpBefore = qty > 0 ? totalCost / qty : 0;
+
+    if (isAcquisition){
+      const cost = (q * price) + fee;
+      totalCost += cost;
+      qty += q;
+    } else if (isDisposal){
+      const cumpAtSale = cumpBefore;
+      const saleValue = (q * price) - fee;
+      const acquisitionValue = q * cumpAtSale;
+      const gain = saleValue - acquisitionValue;
+      qty -= q;
+      totalCost -= acquisitionValue;
+      if (qty < 1e-12) { qty = 0; totalCost = 0; } // évite résidus flottants
+      enriched.push(Object.assign({}, tx, { cumpAtSale, saleValue, acquisitionValue, gain, qty_num:q }));
+      return;
+    }
+    const cumpAfter = qty > 0 ? totalCost / qty : 0;
+    enriched.push(Object.assign({}, tx, { cumpAfter, qty_num:q }));
+  });
+
+  return { transactions: enriched, finalQty: qty, finalCost: totalCost, finalCump: qty > 0 ? totalCost/qty : 0 };
+}
+
+// Construit l'état courant de toutes les possessions
+function computeHoldings(){
+  const symbols = getAllAssetSymbols();
+  const holdings = [];
+  symbols.forEach(sym=>{
+    const { finalQty, finalCost, finalCump } = computeCumpForAsset(sym);
+    if (finalQty > 1e-9){
+      const price = getPrice(sym);
+      const value = price !== null ? finalQty * price : null;
+      const pnl = value !== null ? value - finalCost : null;
+      const pnlPct = (value !== null && finalCost > 0) ? (pnl/finalCost)*100 : null;
+      holdings.push({
+        symbol: sym.toUpperCase(),
+        symbolKey: sym,
+        qty: finalQty,
+        cump: finalCump,
+        cost: finalCost,
+        price, value, pnl, pnlPct,
+        change24h: getChange24h(sym)
+      });
+    }
+  });
+  holdings.sort((a,b)=> (b.value||0) - (a.value||0));
+  return holdings;
+}
+
+function computePortfolioTotals(){
+  const holdings = computeHoldings();
+  let totalValue = 0, totalCost = 0, hasAllPrices = true;
+  holdings.forEach(h=>{
+    totalCost += h.cost;
+    if (h.value !== null) totalValue += h.value; else hasAllPrices = false;
+  });
+  const pnl = totalValue - totalCost;
+  const pnlPct = totalCost > 0 ? (pnl/totalCost)*100 : 0;
+  return { totalValue, totalCost, pnl, pnlPct, holdings, hasAllPrices };
+}
+
+// Toutes les cessions imposables (crypto -> fiat) d'une année donnée, avec calcul de plus-value via CUMP
+function computeTaxableSalesForYear(year){
+  const symbols = getAllAssetSymbols();
+  let sales = [];
+  symbols.forEach(sym=>{
+    const { transactions } = computeCumpForAsset(sym);
+    transactions.forEach(tx=>{
+      if (tx.type === "sell"){
+        const d = new Date(tx.date);
+        if (d.getFullYear() === year){
+          sales.push({
+            date: tx.date, asset: sym.toUpperCase(), qty: tx.qty_num,
+            saleValue: tx.saleValue, acquisitionValue: tx.acquisitionValue, gain: tx.gain
+          });
+        }
+      }
+    });
+  });
+  sales.sort((a,b)=> new Date(a.date) - new Date(b.date));
+  return sales;
+}
+
+// Récompenses de staking/minage perçues sur une année (valorisées à réception)
+function computeRewardsForYear(year){
+  return STATE.data.transactions.filter(tx=>{
+    if (tx.type !== "stake_reward" && tx.type !== "mining") return false;
+    return new Date(tx.date).getFullYear() === year;
+  }).map(tx=> Object.assign({}, tx, { value: (parseFloat(tx.qty)||0) * (parseFloat(tx.price)||0) }))
+    .sort((a,b)=> new Date(a.date) - new Date(b.date));
+}
+
+
+/* ------------------------------------------------------------
+   7. MOTEUR FISCAL FRANÇAIS — CGI
+   ------------------------------------------------------------
+   - Cessions d'actifs numériques (Art. 150 VH bis) :
+       PFU = 12.8% IR + 17.2% PS = 30% global, sur la plus-value nette.
+       Option barème progressif possible (remplace les 12.8% IR par le
+       barème ; les 17.2% PS restent dus dans tous les cas).
+       Abattement : aucun abattement légal pour durée de détention sur
+       les actifs numériques (contrairement aux valeurs mobilières) —
+       on l'affiche à 0 par défaut mais le champ reste pour transparence
+       si la doctrine évolue.
+   - Staking / minage : régime micro-BNC par défaut (abattement
+       forfaitaire de 34%), à valider selon situation réelle.
+   ------------------------------------------------------------ */
+const TAUX_PS = 0.172;
+const TAUX_PFU_IR = 0.128;
+const TAUX_PFU_GLOBAL = 0.30;
+const TAUX_ABATTEMENT_MICRO_BNC = 0.34;
+const TAUX_COTISATIONS_SOCIALES_BNC = 0.22; // estimation indicative (micro-social BNC ~21.1-22%)
+
+function computeFiscalCessions(year, tmi, optionBareme){
+  const sales = computeTaxableSalesForYear(year);
+  const totalSale = sales.reduce((s,x)=> s + x.saleValue, 0);
+  const totalCost = sales.reduce((s,x)=> s + x.acquisitionValue, 0);
+  const grossGain = totalSale - totalCost;
+  const abatement = 0; // pas d'abattement durée de détention pour les actifs numériques en droit positif actuel
+  const netGain = Math.max(grossGain - abatement, grossGain < 0 ? grossGain : 0);
+  // Si moins-value : aucun impôt, et les moins-values ne sont pas imputables sur d'autres revenus (sauf cas spécifiques)
+  const taxableGain = Math.max(netGain, 0);
+
+  const social = taxableGain * TAUX_PS;
+  const ir = optionBareme ? taxableGain * tmi : taxableGain * TAUX_PFU_IR;
+  const totalTax = social + ir;
+  const netAfterTax = totalSale - totalTax; // approximation : net perçu après impôt sur la partie cédée
+
+  return { sales, totalSale, totalCost, grossGain, abatement, netGain: taxableGain, social, ir, totalTax, netAfterTax, isLoss: grossGain < 0 };
+}
+
+function computeFiscalRewards(year, tmi){
+  const rewards = computeRewardsForYear(year);
+  const stakeIncome = rewards.filter(r=>r.type==="stake_reward").reduce((s,x)=>s+x.value,0);
+  const miningIncome = rewards.filter(r=>r.type==="mining").reduce((s,x)=>s+x.value,0);
+  const grossIncome = stakeIncome + miningIncome;
+  const abatement = grossIncome * TAUX_ABATTEMENT_MICRO_BNC;
+  const taxableIncome = grossIncome - abatement;
+  const ir = taxableIncome * tmi;
+  const social = taxableIncome * TAUX_COTISATIONS_SOCIALES_BNC;
+  const totalCharges = ir + social;
+  return { rewards, stakeIncome, miningIncome, grossIncome, abatement, taxableIncome, ir, social, totalCharges };
+}
+
+function populateFiscalYears(){
+  const sel = document.getElementById("fiscal-year");
+  const years = new Set();
+  STATE.data.transactions.forEach(t => years.add(new Date(t.date).getFullYear()));
+  const currentYear = new Date().getFullYear();
+  years.add(currentYear);
+  const sorted = Array.from(years).sort((a,b)=>b-a);
+  sel.innerHTML = sorted.map(y=> `<option value="${y}">${y}</option>`).join("");
+  sel.value = currentYear;
+}
+
+function renderFiscal(){
+  const year = parseInt(document.getElementById("fiscal-year").value) || new Date().getFullYear();
+  const tmi = parseFloat(document.getElementById("fiscal-tmi").value) || 0;
+  const optionBareme = document.getElementById("fiscal-option-bareme").checked;
+
+  const { totalValue } = computePortfolioTotals();
+  document.getElementById("fiscal-total-portfolio").textContent = fmtMoney(totalValue);
+
+  // --- Cessions
+  const c = computeFiscalCessions(year, tmi, optionBareme);
+  document.getElementById("fiscal-taxable-events").textContent = c.sales.length;
+  document.getElementById("r-total-sale").textContent = fmtMoney(c.totalSale);
+  document.getElementById("r-total-cost").textContent = fmtMoney(c.totalCost);
+  const gainEl = document.getElementById("r-gross-gain");
+  gainEl.textContent = fmtMoney(c.grossGain);
+  gainEl.className = "v num " + (c.grossGain >= 0 ? "up" : "down");
+  document.getElementById("r-abatement").textContent = fmtMoney(c.abatement);
+  document.getElementById("r-net-gain").textContent = fmtMoney(c.netGain);
+  document.getElementById("r-social").textContent = fmtMoney(c.social);
+  document.getElementById("r-ir").textContent = fmtMoney(c.ir);
+  document.getElementById("r-total-tax").textContent = fmtMoney(c.totalTax);
+  document.getElementById("r-net-after-tax").textContent = fmtMoney(c.netAfterTax);
+
+  const salesBody = document.querySelector("#fiscal-sales-table tbody");
+  salesBody.innerHTML = "";
+  document.getElementById("fiscal-sales-empty").style.display = c.sales.length ? "none" : "block";
+  c.sales.forEach(s=>{
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${fmtDate(s.date)}</td><td>${escapeHtml(s.asset)}</td><td>${fmtQty(s.qty)}</td>
+      <td>${fmtMoney(s.saleValue)}</td><td>${fmtMoney(s.acquisitionValue)}</td>
+      <td class="${s.gain>=0?'up':'down'}">${fmtMoney(s.gain)}</td>`;
+    salesBody.appendChild(tr);
+  });
+
+  // --- Staking / minage
+  const r = computeFiscalRewards(year, tmi);
+  document.getElementById("r-stake-income").textContent = fmtMoney(r.stakeIncome);
+  document.getElementById("r-mining-income").textContent = fmtMoney(r.miningIncome);
+  document.getElementById("r-bnc-gross").textContent = fmtMoney(r.grossIncome);
+  document.getElementById("r-bnc-abat").textContent = fmtMoney(r.abatement);
+  document.getElementById("r-bnc-taxable").textContent = fmtMoney(r.taxableIncome);
+  document.getElementById("r-bnc-ir").textContent = fmtMoney(r.ir);
+  document.getElementById("r-bnc-social").textContent = fmtMoney(r.social);
+  document.getElementById("r-bnc-total").textContent = fmtMoney(r.totalCharges);
+
+  const rewardsBody = document.querySelector("#fiscal-rewards-table tbody");
+  rewardsBody.innerHTML = "";
+  document.getElementById("fiscal-rewards-empty").style.display = r.rewards.length ? "none" : "block";
+  r.rewards.forEach(rw=>{
+    const tr = document.createElement("tr");
+    const typeLabel = rw.type === "stake_reward" ? "Staking" : "Minage";
+    tr.innerHTML = `<td>${fmtDate(rw.date)}</td><td>${typeLabel}</td><td>${escapeHtml(rw.asset.toUpperCase())}</td>
+      <td>${fmtQty(rw.qty)}</td><td>${fmtMoney(rw.value)}</td>`;
+    rewardsBody.appendChild(tr);
+  });
+
+  // --- Formulaire 2086 (aperçu)
+  document.getElementById("f2086-a").textContent = fmtMoney(c.totalSale);
+  document.getElementById("f2086-b").textContent = fmtMoney(c.totalCost);
+  document.getElementById("f2086-c").textContent = fmtMoney(totalValue + c.totalSale);
+  const dEl = document.getElementById("f2086-d");
+  dEl.textContent = fmtMoney(c.grossGain);
+  dEl.className = "v num " + (c.grossGain >= 0 ? "up" : "down");
+}
+
+["fiscal-year","fiscal-tmi","fiscal-option-bareme"].forEach(id=>{
+  document.getElementById(id).addEventListener("change", renderFiscal);
+});
+
+/* ------------------------------------------------------------
+   8. NAVIGATION
+   ------------------------------------------------------------ */
+function switchView(viewName){
+  document.querySelectorAll(".view").forEach(v=>v.classList.remove("active"));
+  document.getElementById("view-" + viewName).classList.add("active");
+  document.querySelectorAll(".nav-item").forEach(n=>n.classList.remove("active"));
+  const navBtn = document.querySelector(`.nav-item[data-view="${viewName}"]`);
+  if (navBtn) navBtn.classList.add("active");
+  closeSidebarMobile();
+
+  if (viewName === "charts") renderCharts();
+  if (viewName === "fiscal") renderFiscal();
+  if (viewName === "journal") renderJournal();
+  if (viewName === "transactions") renderTransactions();
+  if (viewName === "assets") renderAssets();
+  if (viewName === "dashboard") renderDashboard();
+}
+document.querySelectorAll(".nav-item").forEach(btn=>{
+  btn.addEventListener("click", ()=> switchView(btn.dataset.view));
+});
+document.querySelectorAll("[data-view-link]").forEach(btn=>{
+  btn.addEventListener("click", ()=> switchView(btn.dataset.viewLink));
+});
+function openSidebarMobile(){ document.getElementById("sidebar").classList.add("open"); document.getElementById("sidebar-backdrop").classList.add("show"); }
+function closeSidebarMobile(){ document.getElementById("sidebar").classList.remove("open"); document.getElementById("sidebar-backdrop").classList.remove("show"); }
+document.getElementById("btn-menu").addEventListener("click", openSidebarMobile);
+document.getElementById("sidebar-backdrop").addEventListener("click", closeSidebarMobile);
+
+/* ------------------------------------------------------------
+   9. RENDU — DASHBOARD
+   ------------------------------------------------------------ */
+function assetIconHtml(symbolKey){
+  const meta = STATE.priceMeta[symbolKey];
+  if (meta && meta.image) return `<img src="${meta.image}" alt="">`;
+  return (symbolKey || "?").slice(0,3).toUpperCase();
+}
+
+function renderDashboard(){
+  const { totalValue, totalCost, pnl, pnlPct, holdings } = computePortfolioTotals();
+
+  // stat cards
+  const change24hValue = holdings.reduce((sum,h)=>{
+    if (h.value === null || h.change24h === null) return sum;
+    const yesterday = h.value / (1 + h.change24h/100);
+    return sum + (h.value - yesterday);
+  }, 0);
+  const change24hPct = totalValue > 0 ? (change24hValue / (totalValue - change24hValue)) * 100 : 0;
+
+  const statsHtml = `
+    <div class="stat-card">
+      <div class="label">Valeur totale</div>
+      <div class="value">${fmtMoney(totalValue)}</div>
+      <div class="sub ${change24hValue>=0?'up':'down'}">${fmtPct(change24hPct)} (24h)</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Coût d'acquisition total</div>
+      <div class="value">${fmtMoney(totalCost)}</div>
+      <div class="sub muted">${holdings.length} actif${holdings.length>1?'s':''}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">P&amp;L latent</div>
+      <div class="value ${pnl>=0?'up':'down'}">${fmtMoney(pnl)}</div>
+      <div class="sub ${pnl>=0?'up':'down'}">${fmtPct(pnlPct)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Transactions enregistrées</div>
+      <div class="value">${STATE.data.transactions.length}</div>
+      <div class="sub muted">${STATE.data.journal.length} entrées au journal</div>
+    </div>
+  `;
+  document.getElementById("dash-stats").innerHTML = statsHtml;
+
+  // table holdings (top 8)
+  const tbody = document.querySelector("#dash-holdings-table tbody");
+  tbody.innerHTML = "";
+  if (holdings.length === 0){
+    tbody.innerHTML = `<tr><td colspan="6" class="dim" style="text-align:center; padding:30px;">Aucune possession — ajoute une transaction pour démarrer.</td></tr>`;
+  } else {
+    holdings.slice(0,8).forEach(h=>{
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><div class="asset-row"><div class="asset-icon">${assetIconHtml(h.symbolKey)}</div><b>${escapeHtml(h.symbol)}</b></div></td>
+        <td>${fmtQty(h.qty)}</td>
+        <td>${h.price!==null?fmtMoney(h.price):'<span class="dim">—</span>'}</td>
+        <td>${h.value!==null?fmtMoney(h.value):'<span class="dim">—</span>'}</td>
+        <td class="${h.pnl>=0?'up':'down'}">${h.pnl!==null?fmtMoney(h.pnl):'—'}</td>
+        <td class="${h.change24h>=0?'up':'down'}">${h.change24h!==null?fmtPct(h.change24h):'—'}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.getElementById("dash-sub").textContent = holdings.length
+    ? `${holdings.length} actif${holdings.length>1?'s':''} suivi${holdings.length>1?'s':''} · dernière synchro ${STATE.lastSync ? fmtDateTime(STATE.lastSync) : '—'}`
+    : "Ajoute ta première transaction pour démarrer le suivi";
+
+  renderNetworthChart(currentDashRange || 30);
+  renderAllocationChart("chart-allocation", holdings);
+}
+
+document.querySelectorAll("#dash-range-tabs .tab-btn").forEach(btn=>{
+  btn.addEventListener("click", ()=>{
+    document.querySelectorAll("#dash-range-tabs .tab-btn").forEach(b=>b.classList.remove("active"));
+    btn.classList.add("active");
+    currentDashRange = btn.dataset.range === "all" ? "all" : parseInt(btn.dataset.range);
+    renderNetworthChart(currentDashRange);
+  });
+});
+
+/* ------------------------------------------------------------
+   10. RENDU — ASSETS (possessions détaillées)
+   ------------------------------------------------------------ */
+function renderAssets(){
+  const { holdings } = computePortfolioTotals();
+  const tbody = document.querySelector("#assets-table tbody");
+  tbody.innerHTML = "";
+  document.getElementById("assets-empty").style.display = holdings.length ? "none" : "block";
+
+  holdings.forEach(h=>{
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><div class="asset-row"><div class="asset-icon">${assetIconHtml(h.symbolKey)}</div><b>${escapeHtml(h.symbol)}</b></div></td>
+      <td>${fmtQty(h.qty)}</td>
+      <td>${fmtMoney(h.cump)}</td>
+      <td>${h.price!==null?fmtMoney(h.price):'<span class="dim">—</span>'}</td>
+      <td>${fmtMoney(h.cost)}</td>
+      <td>${h.value!==null?fmtMoney(h.value):'<span class="dim">—</span>'}</td>
+      <td class="${h.pnl>=0?'up':'down'}">${h.pnl!==null?(fmtMoney(h.pnl)+' ('+fmtPct(h.pnlPct)+')'):'—'}</td>
+      <td><button class="btn btn-sm" data-asset-detail="${h.symbolKey}">Détail →</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  document.querySelectorAll('[data-asset-detail]').forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      document.getElementById("filter-asset").value = btn.dataset.assetDetail;
+      switchView("transactions");
+      renderTransactions();
+    });
+  });
+}
+
+/* ------------------------------------------------------------
+   11. SUGGESTIONS D'ACTIFS (datalist)
+   ------------------------------------------------------------ */
+async function initAssetSuggestions(){
+  await ensureCoinList();
+  const dl = document.getElementById("asset-suggestions");
+  const common = ["BTC","ETH","XRP","USDT","BNB","SOL","USDC","ADA","DOGE","TRX","DOT","MATIC","LTC","LINK","AVAX","ATOM"];
+  dl.innerHTML = common.map(s=>`<option value="${s}">`).join("");
+  refreshAssetFilterOptions();
+}
+function refreshAssetFilterOptions(){
+  const sel = document.getElementById("filter-asset");
+  const current = sel.value;
+  const symbols = getAllAssetSymbols();
+  sel.innerHTML = '<option value="">Tous</option>' + symbols.map(s=>`<option value="${s}">${s.toUpperCase()}</option>`).join("");
+  sel.value = current;
+}
+
+/* ------------------------------------------------------------
+   12. RENDU — TRANSACTIONS
+   ------------------------------------------------------------ */
+const TX_TYPE_LABELS = {
+  buy:"Achat", sell:"Vente", stake_reward:"Staking", mining:"Minage",
+  transfer_in:"Réception", transfer_out:"Envoi"
+};
+const TX_TYPE_BADGE = {
+  buy:"badge-buy", sell:"badge-sell", stake_reward:"badge-stake", mining:"badge-stake",
+  transfer_in:"badge-transfer", transfer_out:"badge-transfer"
+};
+
+function renderTransactions(){
+  refreshAssetFilterOptions();
+  const assetFilter = document.getElementById("filter-asset").value;
+  const typeFilter = document.getElementById("filter-type").value;
+
+  let txs = STATE.data.transactions.slice().sort((a,b)=> new Date(b.date) - new Date(a.date));
+  if (assetFilter) txs = txs.filter(t => t.asset.toLowerCase() === assetFilter.toLowerCase());
+  if (typeFilter) txs = txs.filter(t => t.type === typeFilter);
+
+  const tbody = document.querySelector("#tx-table tbody");
+  tbody.innerHTML = "";
+  document.getElementById("tx-empty").style.display = txs.length ? "none" : "block";
+
+  txs.forEach(tx=>{
+    const total = (parseFloat(tx.qty)||0) * (parseFloat(tx.price)||0);
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${fmtDateTime(tx.date)}</td>
+      <td><span class="badge ${TX_TYPE_BADGE[tx.type]||''}">${TX_TYPE_LABELS[tx.type]||tx.type}</span></td>
+      <td><b>${escapeHtml(tx.asset.toUpperCase())}</b></td>
+      <td>${fmtQty(parseFloat(tx.qty))}</td>
+      <td>${fmtMoney(parseFloat(tx.price))}</td>
+      <td>${fmtMoney(total)}</td>
+      <td class="dim">${tx.fee?fmtMoney(parseFloat(tx.fee)):'—'}</td>
+      <td class="dim">${escapeHtml(tx.source||'—')}</td>
+      <td>
+        <button class="icon-btn btn-sm" data-edit-tx="${tx.id}" title="Modifier">✎</button>
+        <button class="icon-btn btn-sm btn-danger" data-del-tx="${tx.id}" title="Supprimer">✕</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  document.querySelectorAll('[data-edit-tx]').forEach(btn=> btn.addEventListener("click", ()=> openTxModal(btn.dataset.editTx)));
+  document.querySelectorAll('[data-del-tx]').forEach(btn=> btn.addEventListener("click", ()=> deleteTx(btn.dataset.delTx)));
+}
+
+document.getElementById("filter-asset").addEventListener("change", renderTransactions);
+document.getElementById("filter-type").addEventListener("change", renderTransactions);
+document.getElementById("btn-clear-filters").addEventListener("click", ()=>{
+  document.getElementById("filter-asset").value = "";
+  document.getElementById("filter-type").value = "";
+  renderTransactions();
+});
+
+/* ------------------------------------------------------------
+   13. MODAL TRANSACTION — création / édition
+   ------------------------------------------------------------ */
+function openTxModal(txId){
+  const form = document.getElementById("form-tx");
+  form.reset();
+  document.getElementById("tx-id").value = "";
+  document.getElementById("tx-fee").value = "0";
+
+  if (txId){
+    const tx = STATE.data.transactions.find(t=>t.id === txId);
+    if (tx){
+      document.getElementById("tx-modal-title").textContent = "Modifier la transaction";
+      document.getElementById("tx-id").value = tx.id;
+      document.getElementById("tx-type").value = tx.type;
+      document.getElementById("tx-asset").value = tx.asset.toUpperCase();
+      document.getElementById("tx-date").value = toLocalDatetimeValue(tx.date);
+      document.getElementById("tx-qty").value = tx.qty;
+      document.getElementById("tx-price").value = tx.price;
+      document.getElementById("tx-fee").value = tx.fee || 0;
+      document.getElementById("tx-source").value = tx.source || "";
+      document.getElementById("tx-notes").value = tx.notes || "";
+    }
+  } else {
+    document.getElementById("tx-modal-title").textContent = "Nouvelle transaction";
+    document.getElementById("tx-date").value = toLocalDatetimeValue(new Date());
+  }
+  updateTxTotalPreview();
+  openModal("modal-tx");
+}
+function toLocalDatetimeValue(d){
+  const dt = (d instanceof Date) ? d : new Date(d);
+  const pad = n => String(n).padStart(2,"0");
+  return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+}
+function updateTxTotalPreview(){
+  const q = parseFloat(document.getElementById("tx-qty").value) || 0;
+  const p = parseFloat(document.getElementById("tx-price").value) || 0;
+  const f = parseFloat(document.getElementById("tx-fee").value) || 0;
+  document.getElementById("tx-total-preview").textContent = fmtMoney(q*p + f);
+}
+["tx-qty","tx-price","tx-fee"].forEach(id=> document.getElementById(id).addEventListener("input", updateTxTotalPreview));
+
+document.getElementById("btn-quick-add").addEventListener("click", ()=> openTxModal());
+document.getElementById("btn-add-tx-assets").addEventListener("click", ()=> openTxModal());
+document.getElementById("btn-add-tx-main").addEventListener("click", ()=> openTxModal());
+document.getElementById("fab-add").addEventListener("click", ()=> openTxModal());
+
+document.getElementById("form-tx").addEventListener("submit", async (e)=>{
+  e.preventDefault();
+  if (STATE.readOnly){ showToast("Mode lecture seule : modification désactivée.", "warn"); return; }
+
+  const id = document.getElementById("tx-id").value;
+  const type = document.getElementById("tx-type").value;
+  const asset = document.getElementById("tx-asset").value.trim().toLowerCase();
+  const date = new Date(document.getElementById("tx-date").value).toISOString();
+  const qty = parseFloat(document.getElementById("tx-qty").value);
+  const price = parseFloat(document.getElementById("tx-price").value);
+  const fee = parseFloat(document.getElementById("tx-fee").value) || 0;
+  const source = document.getElementById("tx-source").value.trim();
+  const notes = document.getElementById("tx-notes").value.trim();
+
+  if (!asset || isNaN(qty) || qty <= 0 || isNaN(price) || price < 0){
+    showToast("Merci de remplir correctement les champs requis.", "err");
+    return;
+  }
+
+  if (id){
+    const tx = STATE.data.transactions.find(t=>t.id===id);
+    Object.assign(tx, { type, asset, date, qty, price, fee, source, notes });
+    addJournal("tx_edit", `Transaction modifiée — ${TX_TYPE_LABELS[type]} ${fmtQty(qty)} ${asset.toUpperCase()}`);
+    showToast("Transaction mise à jour.");
+  } else {
+    STATE.data.transactions.push({ id: uid(), type, asset, date, qty, price, fee, source, notes });
+    addJournal("tx_add", `Transaction ajoutée — ${TX_TYPE_LABELS[type]} ${fmtQty(qty)} ${asset.toUpperCase()}`);
+    showToast("Transaction ajoutée.");
+  }
+
+  closeModal("modal-tx");
+  await fetchPrices();
+  refreshAll();
+  syncPush();
+});
+
+function deleteTx(id){
+  if (STATE.readOnly){ showToast("Mode lecture seule : suppression désactivée.", "warn"); return; }
+  askConfirm("Supprimer la transaction", "Cette action est irréversible. Continuer ?", async ()=>{
+    const tx = STATE.data.transactions.find(t=>t.id===id);
+    STATE.data.transactions = STATE.data.transactions.filter(t=>t.id!==id);
+    if (tx) addJournal("tx_delete", `Transaction supprimée — ${TX_TYPE_LABELS[tx.type]} ${fmtQty(tx.qty)} ${tx.asset.toUpperCase()}`);
+    refreshAll();
+    showToast("Transaction supprimée.");
+    syncPush();
+  });
+}
+
+/* ------------------------------------------------------------
+   14. IMPORT CSV — Kraken / Binance / Coinbase / générique
+   ------------------------------------------------------------ */
+let pendingCsvTxs = [];
+
+function parseCSV(text){
+  // Parseur CSV simple supportant les champs entre guillemets
+  const rows = [];
+  let row = [], field = "", inQuotes = false;
+  for (let i=0; i<text.length; i++){
+    const c = text[i];
+    if (inQuotes){
+      if (c === '"'){
+        if (text[i+1] === '"'){ field += '"'; i++; } else { inQuotes = false; }
+      } else field += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ','){ row.push(field); field=""; }
+      else if (c === '\n' || c === '\r'){
+        if (field !== "" || row.length){ row.push(field); rows.push(row); row=[]; field=""; }
+        if (c === '\r' && text[i+1] === '\n') i++;
+      } else field += c;
+    }
+  }
+  if (field !== "" || row.length){ row.push(field); rows.push(row); }
+  return rows.filter(r => r.length > 1 || (r.length===1 && r[0].trim()!==""));
+}
+
+function detectExchangeFormat(headerRow){
+  const h = headerRow.map(x=>x.toLowerCase().trim());
+  if (h.includes("txid") && h.includes("refid") && h.includes("asset")) return "kraken";
+  if (h.includes("date(utc)") || (h.includes("pair") && h.includes("side") && h.includes("executed"))) return "binance";
+  if (h.some(x=>x.includes("transaction type")) && h.some(x=>x.includes("asset"))) return "coinbase";
+  return "generic";
+}
+
+function mapKrakenRow(headers, row){
+  const get = name => { const idx = headers.findIndex(h=>h.toLowerCase().trim()===name); return idx>=0 ? row[idx] : ""; };
+  const type = (get("type")||"").toLowerCase();
+  const asset = (get("asset")||"").replace(/^X|^Z/,"").trim(); // Kraken préfixe parfois X/Z
+  const amount = parseFloat(get("amount")) || 0;
+  const fee = parseFloat(get("fee")) || 0;
+  const time = get("time");
+  if (!asset || amount === 0) return null;
+  let txType = amount > 0 ? "transfer_in" : "transfer_out";
+  if (type === "trade") txType = amount > 0 ? "buy" : "sell";
+  if (type === "staking") txType = "stake_reward";
+  return { type: txType, asset: asset.toLowerCase(), qty: Math.abs(amount), price: 0, fee, date: time ? new Date(time).toISOString() : new Date().toISOString(), source:"Kraken (CSV)" };
+}
+function mapBinanceRow(headers, row){
+  const get = name => { const idx = headers.findIndex(h=>h.toLowerCase().trim()===name); return idx>=0 ? row[idx] : ""; };
+  const pair = get("pair") || "";
+  const side = (get("side")||"").toLowerCase();
+  const executed = get("executed") || ""; // ex: "0.5 BTC"
+  const amount = get("amount") || "";     // ex: "15000 USDT"
+  const date = get("date(utc)") || get("date");
+  const execMatch = executed.match(/([\d.]+)\s*([A-Za-z]+)/);
+  const amtMatch = amount.match(/([\d.]+)\s*([A-Za-z]+)/);
+  if (!execMatch) return null;
+  const qty = parseFloat(execMatch[1]);
+  const asset = execMatch[2].toLowerCase();
+  const totalFiat = amtMatch ? parseFloat(amtMatch[1]) : 0;
+  const price = qty > 0 ? totalFiat / qty : 0;
+  return { type: side==="buy"?"buy":"sell", asset, qty, price, fee:0, date: date ? new Date(date).toISOString() : new Date().toISOString(), source:"Binance (CSV)" };
+}
+function mapCoinbaseRow(headers, row){
+  const get = name => { const idx = headers.findIndex(h=>h.toLowerCase().trim().includes(name)); return idx>=0 ? row[idx] : ""; };
+  const txType = (get("transaction type")||"").toLowerCase();
+  const asset = (get("asset")||"").toLowerCase();
+  const qty = parseFloat(get("quantity transacted")) || 0;
+  const spotPrice = parseFloat(get("spot price at transaction")) || 0;
+  const fees = parseFloat(get("fees")) || 0;
+  const date = get("timestamp");
+  if (!asset || qty === 0) return null;
+  let type = "transfer_in";
+  if (txType.includes("buy")) type = "buy";
+  else if (txType.includes("sell")) type = "sell";
+  else if (txType.includes("receive")) type = "transfer_in";
+  else if (txType.includes("send")) type = "transfer_out";
+  else if (txType.includes("reward") || txType.includes("staking")) type = "stake_reward";
+  return { type, asset, qty, price: spotPrice, fee: fees, date: date ? new Date(date).toISOString() : new Date().toISOString(), source:"Coinbase (CSV)" };
+}
+function mapGenericRow(headers, row){
+  const get = name => { const idx = headers.findIndex(h=>h.toLowerCase().trim()===name); return idx>=0 ? row[idx] : ""; };
+  const date = get("date");
+  const asset = (get("actif")||get("asset")||"").toLowerCase();
+  const type = (get("type")||"buy").toLowerCase();
+  const qty = parseFloat(get("quantité")||get("quantity")) || 0;
+  const price = parseFloat(get("prix")||get("price")) || 0;
+  const fee = parseFloat(get("frais")||get("fee")) || 0;
+  if (!asset || qty===0) return null;
+  const typeMap = { achat:"buy", buy:"buy", vente:"sell", sell:"sell", staking:"stake_reward", minage:"mining", mining:"mining" };
+  return { type: typeMap[type]||"buy", asset, qty, price, fee, date: date?new Date(date).toISOString():new Date().toISOString(), source:"Import CSV générique" };
+}
+
+function processCsvFile(file){
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    const rows = parseCSV(e.target.result);
+    if (rows.length < 2){ showToast("Fichier CSV vide ou illisible.", "err"); return; }
+    const headers = rows[0];
+    const dataRows = rows.slice(1);
+    let format = document.getElementById("csv-exchange").value;
+    if (format === "auto") format = detectExchangeFormat(headers);
+
+    const mapper = { kraken: mapKrakenRow, binance: mapBinanceRow, coinbase: mapCoinbaseRow, generic: mapGenericRow }[format] || mapGenericRow;
+    pendingCsvTxs = dataRows.map(r => mapper(headers, r)).filter(Boolean);
+
+    renderCsvPreview(format, pendingCsvTxs);
+  };
+  reader.readAsText(file);
+}
+
+function renderCsvPreview(format, txs){
+  document.getElementById("csv-preview").style.display = "block";
+  document.getElementById("csv-preview-title").textContent = `Aperçu — format détecté : ${format} — ${txs.length} transaction(s)`;
+  const thead = document.querySelector("#csv-preview-table thead");
+  const tbody = document.querySelector("#csv-preview-table tbody");
+  thead.innerHTML = "<tr><th>Date</th><th>Type</th><th>Actif</th><th>Quantité</th><th>Prix</th><th>Frais</th></tr>";
+  tbody.innerHTML = "";
+  txs.slice(0,50).forEach(tx=>{
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${fmtDateTime(tx.date)}</td><td>${TX_TYPE_LABELS[tx.type]||tx.type}</td><td>${tx.asset.toUpperCase()}</td><td>${fmtQty(tx.qty)}</td><td>${fmtMoney(tx.price)}</td><td>${fmtMoney(tx.fee)}</td>`;
+    tbody.appendChild(tr);
+  });
+  document.getElementById("btn-csv-confirm").disabled = txs.length === 0;
+}
+
+const csvDrop = document.getElementById("csv-drop");
+const csvFileInput = document.getElementById("csv-file");
+csvDrop.addEventListener("click", ()=> csvFileInput.click());
+csvFileInput.addEventListener("change", (e)=>{ if (e.target.files[0]) processCsvFile(e.target.files[0]); });
+csvDrop.addEventListener("dragover", (e)=>{ e.preventDefault(); csvDrop.classList.add("drag"); });
+csvDrop.addEventListener("dragleave", ()=> csvDrop.classList.remove("drag"));
+csvDrop.addEventListener("drop", (e)=>{
+  e.preventDefault(); csvDrop.classList.remove("drag");
+  if (e.dataTransfer.files[0]) processCsvFile(e.dataTransfer.files[0]);
+});
+
+document.getElementById("btn-import-csv").addEventListener("click", ()=>{
+  pendingCsvTxs = [];
+  document.getElementById("csv-preview").style.display = "none";
+  document.getElementById("btn-csv-confirm").disabled = true;
+  csvFileInput.value = "";
+  openModal("modal-csv");
+});
+
+/* ------------------------------------------------------------
+   15. GRAPHIQUES — Chart.js
+   ------------------------------------------------------------ */
+const CHART_COLORS = ["#39ff8f","#ffb648","#5dd6ff","#ff5d5d","#b687ff","#ff8fc7","#7fffd4","#ffe35d","#8fa89c","#ff9d5d"];
+Chart.defaults.color = "#8fa89c";
+Chart.defaults.font.family = "IBM Plex Mono, monospace";
+Chart.defaults.font.size = 11;
+Chart.defaults.borderColor = "#1d2b27";
+
+function destroyChart(key){
+  if (STATE.charts[key]){ STATE.charts[key].destroy(); delete STATE.charts[key]; }
+}
+
+// --- Évolution du patrimoine (reconstruction historique à partir des transactions + cours historiques)
+async function renderNetworthChart(range){
+  const canvasIds = ["chart-networth","chart-networth-2"];
+  const days = range === "all" ? 365 : range;
+  const holdings = computePortfolioTotals().holdings;
+
+  if (holdings.length === 0){
+    canvasIds.forEach(id=>{
+      const el = document.getElementById(id);
+      if (el && el.offsetParent !== null) destroyChart(id);
+    });
+    return;
+  }
+
+  // Récupère l'historique de prix pour chaque actif détenu (en parallèle)
+  const histories = {};
+  await Promise.all(holdings.map(async h=>{
+    const points = await fetchMarketChart(h.symbolKey, days);
+    histories[h.symbolKey] = points;
+  }));
+
+  // Construit une série temporelle unifiée (jour par jour) de la valeur totale,
+  // en tenant compte de la quantité détenue à CHAQUE instant (pas juste la quantité actuelle).
+  const allTimestamps = new Set();
+  Object.values(histories).forEach(points => points.forEach(p => allTimestamps.add(Math.floor(p[0]/86400000))));
+  const sortedDays = Array.from(allTimestamps).sort((a,b)=>a-b);
+
+  const labels = [];
+  const values = [];
+  sortedDays.forEach(dayTs=>{
+    const date = new Date(dayTs*86400000);
+    let totalAtDay = 0;
+    holdings.forEach(h=>{
+      const points = histories[h.symbolKey] || [];
+      // trouve le prix le plus proche de ce jour
+      let closest = null;
+      points.forEach(p=>{ if (Math.floor(p[0]/86400000) === dayTs) closest = p[1]; });
+      if (closest === null && points.length){
+        // fallback: dernier prix connu avant cette date
+        const before = points.filter(p=>p[0] <= date.getTime());
+        if (before.length) closest = before[before.length-1][1];
+      }
+      // quantité détenue à cette date (recalcul simplifié via transactions <= date)
+      const qtyAtDate = computeQtyAtDate(h.symbolKey, date);
+      if (closest !== null) totalAtDay += qtyAtDate * closest;
+    });
+    labels.push(fmtDate(date));
+    values.push(totalAtDay);
+  });
+
+  canvasIds.forEach(id=>{
+    const canvas = document.getElementById(id);
+    if (!canvas) return;
+    destroyChart(id);
+    const ctx = canvas.getContext("2d");
+    const gradient = ctx.createLinearGradient(0,0,0,260);
+    gradient.addColorStop(0, "rgba(57,255,143,0.25)");
+    gradient.addColorStop(1, "rgba(57,255,143,0)");
+    STATE.charts[id] = new Chart(ctx, {
+      type:"line",
+      data:{ labels, datasets:[{
+        data: values, borderColor:"#39ff8f", backgroundColor:gradient,
+        fill:true, tension:0.3, pointRadius:0, borderWidth:2
+      }]},
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: c => fmtMoney(c.parsed.y) } } },
+        scales:{
+          x:{ grid:{color:"#16201d"}, ticks:{maxTicksLimit:8} },
+          y:{ grid:{color:"#16201d"}, ticks:{ callback: v => fmtMoney(v) } }
+        }
+      }
+    });
+  });
+}
+
+function computeQtyAtDate(symbolKey, date){
+  const txs = STATE.data.transactions.filter(t=> t.asset.toLowerCase()===symbolKey.toLowerCase() && new Date(t.date) <= date);
+  let qty = 0;
+  txs.forEach(tx=>{
+    const q = parseFloat(tx.qty)||0;
+    if (tx.type==="buy"||tx.type==="stake_reward"||tx.type==="mining"||tx.type==="transfer_in") qty += q;
+    else if (tx.type==="sell"||tx.type==="transfer_out") qty -= q;
+  });
+  return Math.max(qty, 0);
+}
+
+function renderAllocationChart(canvasId, holdings){
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  destroyChart(canvasId);
+  const validHoldings = holdings.filter(h=>h.value !== null && h.value > 0);
+  if (validHoldings.length === 0) return;
+  const ctx = canvas.getContext("2d");
+  STATE.charts[canvasId] = new Chart(ctx, {
+    type:"doughnut",
+    data:{
+      labels: validHoldings.map(h=>h.symbol),
+      datasets:[{ data: validHoldings.map(h=>h.value), backgroundColor: CHART_COLORS, borderColor:"#0c1210", borderWidth:2 }]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false, cutout:"62%",
+      plugins:{ legend:{ position:"bottom", labels:{ boxWidth:10, padding:12 } },
+        tooltip:{ callbacks:{ label: c => `${c.label}: ${fmtMoney(c.parsed)}` } } }
+    }
+  });
+}
+
+function renderPnlChart(){
+  const { holdings, totalCost } = computePortfolioTotals();
+  const year = new Date().getFullYear();
+  let realizedGain = 0;
+  for (let y = year-5; y<=year; y++){ realizedGain += computeTaxableSalesForYear(y).reduce((s,x)=>s+x.gain,0); }
+  const latentGain = holdings.reduce((s,h)=> s + (h.pnl||0), 0);
+
+  destroyChart("chart-pnl");
+  const ctx = document.getElementById("chart-pnl").getContext("2d");
+  STATE.charts["chart-pnl"] = new Chart(ctx, {
+    type:"bar",
+    data:{
+      labels:["P&L réalisé (cessions)","P&L latent (possessions)"],
+      datasets:[{ data:[realizedGain, latentGain], backgroundColor:[realizedGain>=0?"#39ff8f":"#ff5d5d", latentGain>=0?"#39ff8f":"#ff5d5d"], borderRadius:4 }]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:c=>fmtMoney(c.parsed.y) } } },
+      scales:{ x:{ grid:{display:false} }, y:{ grid:{color:"#16201d"}, ticks:{ callback:v=>fmtMoney(v) } } }
+    }
+  });
+}
+
+function renderCostVsValueChart(){
+  const { holdings } = computePortfolioTotals();
+  destroyChart("chart-cost-vs-value");
+  const ctx = document.getElementById("chart-cost-vs-value").getContext("2d");
+  STATE.charts["chart-cost-vs-value"] = new Chart(ctx, {
+    type:"bar",
+    data:{
+      labels: holdings.map(h=>h.symbol),
+      datasets:[
+        { label:"Coût d'acquisition", data: holdings.map(h=>h.cost), backgroundColor:"#4d6359", borderRadius:3 },
+        { label:"Valeur actuelle", data: holdings.map(h=>h.value||0), backgroundColor:"#39ff8f", borderRadius:3 }
+      ]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ position:"bottom", labels:{boxWidth:10} }, tooltip:{ callbacks:{ label:c=>`${c.dataset.label}: ${fmtMoney(c.parsed.y)}` } } },
+      scales:{ x:{ grid:{display:false} }, y:{ grid:{color:"#16201d"}, ticks:{ callback:v=>fmtMoney(v) } } }
+    }
+  });
+}
+
+function renderVolumeChart(){
+  const monthly = {};
+  STATE.data.transactions.forEach(tx=>{
+    const d = new Date(tx.date);
+    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+    monthly[key] = (monthly[key]||0) + 1;
+  });
+  const keys = Object.keys(monthly).sort().slice(-12);
+  destroyChart("chart-volume");
+  const ctx = document.getElementById("chart-volume").getContext("2d");
+  STATE.charts["chart-volume"] = new Chart(ctx, {
+    type:"bar",
+    data:{ labels: keys, datasets:[{ data: keys.map(k=>monthly[k]), backgroundColor:"#39ff8f", borderRadius:3 }] },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false} },
+      scales:{ x:{ grid:{display:false} }, y:{ grid:{color:"#16201d"}, ticks:{ stepSize:1 } } }
+    }
+  });
+}
+
+function renderPerfChart(){
+  const { holdings } = computePortfolioTotals();
+  const withPct = holdings.filter(h=>h.pnlPct !== null);
+  destroyChart("chart-perf");
+  const ctx = document.getElementById("chart-perf").getContext("2d");
+  STATE.charts["chart-perf"] = new Chart(ctx, {
+    type:"bar",
+    data:{
+      labels: withPct.map(h=>h.symbol),
+      datasets:[{ data: withPct.map(h=>h.pnlPct), backgroundColor: withPct.map(h=>h.pnlPct>=0?"#39ff8f":"#ff5d5d"), borderRadius:3 }]
+    },
+    options:{
+      indexAxis:"y", responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:c=>fmtPct(c.parsed.x) } } },
+      scales:{ x:{ grid:{color:"#16201d"}, ticks:{ callback:v=>v+"%" } }, y:{ grid:{display:false} } }
+    }
+  });
+}
+
+function renderCharts(){
+  const { holdings } = computePortfolioTotals();
+  renderNetworthChart(currentDashRange || 30);
+  renderAllocationChart("chart-allocation-2", holdings);
+  renderPnlChart();
+  renderCostVsValueChart();
+  renderVolumeChart();
+  renderPerfChart();
+}
+
+/* ------------------------------------------------------------
+   16. JOURNAL D'ACTIVITÉ
+   ------------------------------------------------------------ */
+const JOURNAL_ICONS = {
+  auth:"🔑", tx_add:"＋", tx_edit:"✎", tx_delete:"✕", csv_import:"⇧",
+  settings:"⚙", sync:"⇄", default:"•"
+};
+function renderJournal(){
+  const list = document.getElementById("journal-list");
+  const entries = STATE.data.journal || [];
+  document.getElementById("journal-empty").style.display = entries.length ? "none" : "block";
+  list.innerHTML = entries.map(e=>`
+    <div class="journal-item">
+      <div class="jicon">${JOURNAL_ICONS[e.type]||JOURNAL_ICONS.default}</div>
+      <div class="jbody">
+        <div class="jtitle">${escapeHtml(e.message)}</div>
+        <div class="jtime">${fmtDateTime(e.ts)}</div>
+      </div>
+    </div>
+  `).join("");
+}
+document.getElementById("btn-clear-journal").addEventListener("click", ()=>{
+  askConfirm("Vider le journal", "Toutes les entrées du journal seront supprimées définitivement.", ()=>{
+    STATE.data.journal = [];
+    renderJournal();
+    syncPush();
+    showToast("Journal vidé.");
+  });
+});
+
+/* ------------------------------------------------------------
+   17. PARAMÈTRES
+   ------------------------------------------------------------ */
+function applySettingsToUI(){
+  const s = STATE.data.settings;
+  document.getElementById("set-currency").value = s.currency || "eur";
+  document.getElementById("set-refresh").value = s.refreshMs || 180000;
+  document.getElementById("set-privacy-mode").checked = !!s.privacy;
+  document.getElementById("set-repo-info").textContent = STATE.github.owner ? (STATE.github.owner + "/" + STATE.github.repo) : "—";
+}
+document.getElementById("set-currency").addEventListener("change", (e)=>{
+  STATE.data.settings.currency = e.target.value;
+  addJournal("settings", "Devise d'affichage changée pour " + e.target.value.toUpperCase());
+  refreshAll(); syncPush();
+});
+document.getElementById("set-refresh").addEventListener("change", (e)=>{
+  STATE.data.settings.refreshMs = parseInt(e.target.value);
+  startAutoRefresh();
+  addJournal("settings", "Fréquence de rafraîchissement modifiée.");
+  syncPush();
+});
+document.getElementById("set-privacy-mode").addEventListener("change", (e)=>{
+  STATE.data.settings.privacy = e.target.checked;
+  refreshAll(); syncPush();
+});
+document.addEventListener("keydown", (e)=>{
+  if (e.altKey && e.key.toLowerCase()==="p" && STATE.unlocked){
+    STATE.data.settings.privacy = !STATE.data.settings.privacy;
+    document.getElementById("set-privacy-mode").checked = STATE.data.settings.privacy;
+    refreshAll(); syncPush();
+    showToast(STATE.data.settings.privacy ? "Mode confidentialité activé." : "Mode confidentialité désactivé.");
+  }
+});
+
+document.getElementById("btn-force-sync").addEventListener("click", async ()=>{
+  showToast("Synchronisation forcée…");
+  await syncPull();
+  refreshAll();
+  await syncPush(true);
+  showToast("Synchronisation terminée.");
+});
+
+document.getElementById("btn-change-pass").addEventListener("click", ()=>{
+  const curr = document.getElementById("set-currpass").value;
+  const next = document.getElementById("set-newpass").value;
+  const vault = loadVault();
+  if (!vault){ showLockMsg2("Aucune configuration trouvée.", false); return; }
+  const token = decryptToken(vault.encToken, curr, vault.salt, vault.iv);
+  if (!token){ showLockMsg2("Mot de passe actuel incorrect.", false); return; }
+  if (next.length < 8){ showLockMsg2("Le nouveau mot de passe doit faire au moins 8 caractères.", false); return; }
+  const { cipher, salt, iv } = deriveAndEncryptToken(token, next);
+  saveVault(cipher, vault.owner, vault.repo, salt, iv);
+  addJournal("auth", "Mot de passe maître modifié.");
+  syncPush();
+  showLockMsg2("Mot de passe modifié avec succès.", true);
+  document.getElementById("set-currpass").value = "";
+  document.getElementById("set-newpass").value = "";
+});
+function showLockMsg2(text, ok){
+  const el = document.getElementById("set-pass-msg");
+  el.textContent = text;
+  el.className = "lock-msg show " + (ok?"ok":"err");
+}
+
+document.getElementById("btn-export-data").addEventListener("click", ()=>{
+  const blob = new Blob([JSON.stringify(STATE.data, null, 2)], { type:"application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `ledger-export-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  addJournal("settings", "Export complet des données effectué.");
+  syncPush();
+});
+
+document.getElementById("btn-wipe-data").addEventListener("click", ()=>{
+  if (STATE.readOnly){ showToast("Mode lecture seule.", "warn"); return; }
+  askConfirm("Effacer toutes les données", "TOUTES les transactions, le journal et les paramètres seront supprimés définitivement, y compris sur GitHub. Cette action est irréversible.", async ()=>{
+    STATE.data = { transactions:[], journal:[], settings:{currency:"eur",refreshMs:180000,privacy:false} };
+    addJournal("settings", "Toutes les données ont été effacées.");
+    refreshAll();
+    await syncPush(true);
+    showToast("Toutes les données ont été effacées.");
+  });
+});
+
+/* ------------------------------------------------------------
+   18. REFRESH GLOBAL & INIT
+   ------------------------------------------------------------ */
+function refreshAll(){
+  renderDashboard();
+  renderAssets();
+  renderTransactions();
+  renderJournal();
+  populateFiscalYears();
+  if (document.getElementById("view-fiscal").classList.contains("active")) renderFiscal();
+  if (document.getElementById("view-charts").classList.contains("active")) renderCharts();
+}
+
+(async function init(){
+  initLockScreenMode();
+  const resumed = await tryResumeSession();
+  if (!resumed){
+    // rien — l'écran de verrouillage est déjà affiché par défaut
+  }
+})();
+</script>
+
+
+
+
+
+
+
+
+</body>
+</html>
