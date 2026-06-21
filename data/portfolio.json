@@ -1,0 +1,16 @@
+{
+  "transactions": [],
+  "journal": [
+    {
+      "id": "mqnkyt6zfp4lyhn",
+      "ts": 1782033889355,
+      "type": "auth",
+      "message": "Première configuration effectuée — dépôt Trolorder/crypto connecté."
+    }
+  ],
+  "settings": {
+    "currency": "eur",
+    "refreshMs": 180000,
+    "privacy": false
+  }
+}
