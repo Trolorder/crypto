@@ -2,6 +2,12 @@
   "transactions": [],
   "journal": [
     {
+      "id": "mqny8wu3x2m3ghn",
+      "ts": 1782056195643,
+      "type": "auth",
+      "message": "Première configuration effectuée — dépôt Trolorder/crypto connecté, vault chiffré sauvegardé."
+    },
+    {
       "id": "mqnkyt6zfp4lyhn",
       "ts": 1782033889355,
       "type": "auth",
